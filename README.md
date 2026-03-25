@@ -15,7 +15,7 @@
 - 일일 손실 제한 도달 시 자동 중지
 - API 키 자동 저장/자동 불러오기
 - 체결내역 테이블 (실시간 업데이트)
-- 텔레그램 알림 (진입/청산/오류/리스크)
+- 디스코드 웹훅 알림 (진입/청산/오류/리스크)
 - 차트 고급화:
   - 캔들(OHLC) + 단기/장기 MA
   - 거래량(Volume) 패널
@@ -26,7 +26,7 @@
 ## 2) 파일 구성
 
 - `live_futures_bot_ui.py` : 메인 GUI 앱
-- `.env` : API 키/텔레그램 설정 저장
+- `.env` : API 키/디스코드 설정 저장
 - `logs/` : 실행 로그 파일 (`bot_YYYYMMDD.log`)
 
 ---
@@ -56,19 +56,17 @@ python .\live_futures_bot_ui.py
 
 ---
 
-## 5) 텔레그램 알림 설정 (선택)
+## 5) 디스코드 웹훅 알림 설정 (선택)
 
-UI에서 아래 3개 입력 후 저장:
-- 텔레그램 알림 사용 (체크)
-- 텔레그램 봇 토큰
-- 텔레그램 채팅 ID
+UI에서 아래 항목 입력 후 저장:
+- 디스코드 알림 사용 (체크)
+- 디스코드 웹훅 URL
 
 `.env`에도 자동 저장됩니다:
 
 ```env
-TELEGRAM_ENABLED=true
-TELEGRAM_BOT_TOKEN=123456:ABC...
-TELEGRAM_CHAT_ID=123456789
+DISCORD_ENABLED=true
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 알림 이벤트:
@@ -137,4 +135,4 @@ pyinstaller --noconfirm --windowed --name BinanceFuturesBot live_futures_bot_ui.
 - [ ] 1회 리스크 0.2%~0.5%
 - [ ] 일일 손실 제한 1% 내외
 - [ ] 모의 실행 및 소액 실거래 로그 충분히 검증
-- [ ] 오류 알림(텔레그램) 정상 수신 확인
+- [ ] 오류 알림(디스코드) 정상 수신 확인

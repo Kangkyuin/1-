@@ -33,16 +33,14 @@ class BotConfig:
     max_daily_loss_pct: float
     loop_seconds: int
     dry_run: bool
-    telegram_enabled: bool
-    telegram_bot_token: str
-    telegram_chat_id: str
+    discord_enabled: bool
+    discord_webhook_url: str
 
 
-class TelegramNotifier:
-    def __init__(self, enabled: bool, bot_token: str, chat_id: str):
-        self.enabled = enabled and bool(bot_token) and bool(chat_id)
-        self.bot_token = bot_token.strip()
-        self.chat_id = chat_id.strip()
+class DiscordNotifier:
+    def __init__(self, enabled: bool, webhook_url: str):
+        self.enabled = enabled and bool(webhook_url)
+        self.webhook_url = webhook_url.strip()
 
     def send_async(self, message: str) -> None:
         if not self.enabled:
@@ -56,12 +54,10 @@ class TelegramNotifier:
 
     def _send_sync(self, message: str) -> None:
         try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            url = self.webhook_url
             payload = urllib.parse.urlencode(
                 {
-                    "chat_id": self.chat_id,
-                    "text": message,
-                    "disable_web_page_preview": "true",
+                    "content": message,
                 }
             ).encode("utf-8")
             req = urllib.request.Request(url, data=payload, method="POST")
@@ -85,10 +81,9 @@ class FuturesBotEngine:
         self.state_cb = state_cb
         self.trade_cb = trade_cb
         self.stop_event = stop_event
-        self.notifier = TelegramNotifier(
-            enabled=config.telegram_enabled,
-            bot_token=config.telegram_bot_token,
-            chat_id=config.telegram_chat_id,
+        self.notifier = DiscordNotifier(
+            enabled=config.discord_enabled,
+            webhook_url=config.discord_webhook_url,
         )
         self.exchange = None
         self.initial_equity: Optional[float] = None
@@ -799,8 +794,7 @@ class FuturesBotUI:
             ("take_profit_pct", "익절 비율", "0.014"),
             ("max_daily_loss_pct", "일일 최대손실 비율", "0.01"),
             ("loop_seconds", "반복 주기(초)", "30"),
-            ("telegram_bot_token", "텔레그램 봇 토큰", ""),
-            ("telegram_chat_id", "텔레그램 채팅 ID", ""),
+            ("discord_webhook_url", "디스코드 웹훅 URL", ""),
         ]
 
         row = 0
@@ -808,20 +802,19 @@ class FuturesBotUI:
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
             var = tk.StringVar(value=value)
             self.vars[key] = var
-            show = "*" if key in {"api_secret", "telegram_bot_token"} else None
+            show = "*" if key in {"api_secret"} else None
             entry = ttk.Entry(parent, textvariable=var, width=36, show=show)
             entry.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 0))
             if key in {
                 "api_key",
                 "api_secret",
-                "telegram_bot_token",
-                "telegram_chat_id",
+                "discord_webhook_url",
             }:
                 entry.bind("<FocusOut>", self._on_credential_focus_out)
             row += 1
 
         self.vars["live_mode"] = tk.BooleanVar(value=False)
-        self.vars["telegram_enabled"] = tk.BooleanVar(value=False)
+        self.vars["discord_enabled"] = tk.BooleanVar(value=False)
         self.vars["margin_mode"] = tk.StringVar(value="isolated")
 
         live_check = ttk.Checkbutton(
@@ -854,12 +847,12 @@ class FuturesBotUI:
         self._select_margin_mode("isolated")
         row += 1
 
-        telegram_check = ttk.Checkbutton(
+        discord_check = ttk.Checkbutton(
             parent,
-            text="텔레그램 알림 사용 (진입/청산/오류)",
-            variable=self.vars["telegram_enabled"],
+            text="디스코드 웹훅 알림 사용 (진입/청산/오류)",
+            variable=self.vars["discord_enabled"],
         )
-        telegram_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        discord_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         parent.columnconfigure(1, weight=1)
 
@@ -888,10 +881,9 @@ class FuturesBotUI:
         values = dotenv_values(self.env_path)
         self.vars["api_key"].set(values.get("BINANCE_API_KEY", ""))
         self.vars["api_secret"].set(values.get("BINANCE_API_SECRET", ""))
-        self.vars["telegram_bot_token"].set(values.get("TELEGRAM_BOT_TOKEN", ""))
-        self.vars["telegram_chat_id"].set(values.get("TELEGRAM_CHAT_ID", ""))
-        self.vars["telegram_enabled"].set(
-            str(values.get("TELEGRAM_ENABLED", "false")).lower() in {"1", "true", "yes"}
+        self.vars["discord_webhook_url"].set(values.get("DISCORD_WEBHOOK_URL", ""))
+        self.vars["discord_enabled"].set(
+            str(values.get("DISCORD_ENABLED", "false")).lower() in {"1", "true", "yes"}
         )
         margin_mode = str(values.get("BINANCE_MARGIN_MODE", "isolated")).strip().lower()
         if margin_mode not in {"isolated", "cross"}:
@@ -914,18 +906,13 @@ class FuturesBotUI:
         set_key(self.env_path, "BINANCE_API_SECRET", api_secret)
         set_key(
             self.env_path,
-            "TELEGRAM_BOT_TOKEN",
-            self.vars["telegram_bot_token"].get().strip(),
+            "DISCORD_WEBHOOK_URL",
+            self.vars["discord_webhook_url"].get().strip(),
         )
         set_key(
             self.env_path,
-            "TELEGRAM_CHAT_ID",
-            self.vars["telegram_chat_id"].get().strip(),
-        )
-        set_key(
-            self.env_path,
-            "TELEGRAM_ENABLED",
-            "true" if self.vars["telegram_enabled"].get() else "false",
+            "DISCORD_ENABLED",
+            "true" if self.vars["discord_enabled"].get() else "false",
         )
         margin_mode = "isolated"
         margin_var = self.vars.get("margin_mode")
@@ -992,9 +979,8 @@ class FuturesBotUI:
             max_daily_loss_pct=float(self.vars["max_daily_loss_pct"].get().strip()),
             loop_seconds=int(self.vars["loop_seconds"].get().strip()),
             dry_run=not self.vars["live_mode"].get(),
-            telegram_enabled=self.vars["telegram_enabled"].get(),
-            telegram_bot_token=self.vars["telegram_bot_token"].get().strip(),
-            telegram_chat_id=self.vars["telegram_chat_id"].get().strip(),
+            discord_enabled=self.vars["discord_enabled"].get(),
+            discord_webhook_url=self.vars["discord_webhook_url"].get().strip(),
         )
 
     def start_bot(self) -> None:
@@ -1019,13 +1005,10 @@ class FuturesBotUI:
         if config.loop_seconds < 5:
             messagebox.showerror("반복 주기 오류", "반복 주기는 5초 이상이어야 합니다.")
             return
-        if (
-            config.telegram_enabled
-            and (not config.telegram_bot_token or not config.telegram_chat_id)
-        ):
+        if config.discord_enabled and (not config.discord_webhook_url):
             messagebox.showerror(
-                "텔레그램 설정 오류",
-                "텔레그램 알림 사용 시 봇 토큰과 채팅 ID가 필요합니다.",
+                "디스코드 설정 오류",
+                "디스코드 알림 사용 시 웹훅 URL이 필요합니다.",
             )
             return
 
