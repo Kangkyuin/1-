@@ -531,6 +531,7 @@ class FuturesBotUI:
             "mode": tk.StringVar(value="대기"),
         }
         self.last_chart_points: list[dict] = []
+        self.margin_mode_var = tk.StringVar(value="isolated")
 
         self._build_ui()
         self._load_env_to_form()
@@ -604,6 +605,26 @@ class FuturesBotUI:
             "Secondary.TButton",
             background=[("active", "#475569"), ("disabled", "#334155")],
             foreground=[("disabled", "#94A3B8")],
+        )
+        style.configure(
+            "ModeOn.TButton",
+            background="#1D4ED8",
+            foreground="#FFFFFF",
+            padding=(10, 5),
+        )
+        style.map(
+            "ModeOn.TButton",
+            background=[("active", "#1E40AF")],
+        )
+        style.configure(
+            "ModeOff.TButton",
+            background="#334155",
+            foreground="#CBD5E1",
+            padding=(10, 5),
+        )
+        style.map(
+            "ModeOff.TButton",
+            background=[("active", "#475569")],
         )
         style.configure(
             "Trades.Treeview",
@@ -696,7 +717,7 @@ class FuturesBotUI:
 
         chart_info = ttk.Label(
             chart_tab,
-            text="최근 종가 + 단기/장기 MA (확정봉 기준)",
+            text="상단: 캔들+MA / 중단: 거래량 / 하단: RSI(14)",
             style="Title.TLabel",
             font=("Segoe UI", 10, "bold"),
         )
@@ -797,6 +818,7 @@ class FuturesBotUI:
 
         self.vars["live_mode"] = tk.BooleanVar(value=False)
         self.vars["telegram_enabled"] = tk.BooleanVar(value=False)
+        self.margin_mode_var = tk.StringVar(value="isolated")
 
         live_check = ttk.Checkbutton(
             parent,
@@ -804,6 +826,28 @@ class FuturesBotUI:
             variable=self.vars["live_mode"],
         )
         live_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        row += 1
+
+        ttk.Label(parent, text="마진 모드 선택").grid(
+            row=row, column=0, sticky="w", pady=(8, 4)
+        )
+        mode_frame = ttk.Frame(parent)
+        mode_frame.grid(row=row, column=1, sticky="w", pady=(8, 4), padx=(8, 0))
+        self.margin_iso_btn = ttk.Button(
+            mode_frame,
+            text="격리 (Isolated)",
+            style="ModeOn.TButton",
+            command=lambda: self._select_margin_mode("isolated"),
+        )
+        self.margin_cross_btn = ttk.Button(
+            mode_frame,
+            text="교차 (Cross)",
+            style="ModeOff.TButton",
+            command=lambda: self._select_margin_mode("cross"),
+        )
+        self.margin_iso_btn.pack(side="left")
+        self.margin_cross_btn.pack(side="left", padx=(6, 0))
+        self._select_margin_mode("isolated")
         row += 1
 
         telegram_check = ttk.Checkbutton(
@@ -885,6 +929,15 @@ class FuturesBotUI:
 
     def _on_credential_focus_out(self, _event=None) -> None:
         self._save_env(show_popup=False)
+
+    def _select_margin_mode(self, mode: str) -> None:
+        self.vars["margin_mode"].set(mode)
+        if mode == "isolated":
+            self.margin_iso_btn.configure(style="ModeOn.TButton")
+            self.margin_cross_btn.configure(style="ModeOff.TButton")
+        else:
+            self.margin_iso_btn.configure(style="ModeOff.TButton")
+            self.margin_cross_btn.configure(style="ModeOn.TButton")
 
     def _build_config(self) -> BotConfig:
         symbol = self.vars["symbol"].get().strip()
@@ -1055,36 +1108,77 @@ class FuturesBotUI:
             )
             return
 
-        values: list[float] = []
-        for p in points:
-            for key in ("high", "low", "short", "long"):
-                v = p.get(key)
-                if v is not None:
-                    values.append(float(v))
-        if not values:
-            return
+        # Split into 3 stacked panels: price / volume / RSI.
+        gap = 12
+        price_h = int(plot_h * 0.62)
+        vol_h = int(plot_h * 0.18)
+        rsi_h = int(plot_h * 0.20)
+        used_h = price_h + vol_h + rsi_h + gap * 2
+        if used_h > plot_h:
+            overflow = used_h - plot_h
+            price_h = max(price_h - overflow, 80)
+        y_price0 = top
+        y_price1 = y_price0 + price_h
+        y_vol0 = y_price1 + gap
+        y_vol1 = y_vol0 + vol_h
+        y_rsi0 = y_vol1 + gap
+        y_rsi1 = top + plot_h
 
-        v_min = min(values)
-        v_max = max(values)
-        if v_max - v_min < 1e-9:
-            v_max = v_min + 1.0
+        # Panel backgrounds
+        canvas.create_rectangle(left, y_price0, left + plot_w, y_price1, outline="#1E293B", fill="#0B1220")
+        canvas.create_rectangle(left, y_vol0, left + plot_w, y_vol1, outline="#1E293B", fill="#0B1220")
+        canvas.create_rectangle(left, y_rsi0, left + plot_w, y_rsi1, outline="#1E293B", fill="#0B1220")
 
-        def x_of(i: int, n: int) -> float:
+        n = len(points)
+
+        def x_of(i: int) -> float:
             if n <= 1:
                 return left + plot_w / 2
             return left + (i / n) * plot_w + (plot_w / n) / 2
 
-        def y_of(v: float) -> float:
-            ratio = (v - v_min) / (v_max - v_min)
-            return top + (1 - ratio) * plot_h
+        # Price panel scale
+        price_values: list[float] = []
+        for p in points:
+            for key in ("high", "low", "short", "long"):
+                v = p.get(key)
+                if v is not None:
+                    price_values.append(float(v))
+        if not price_values:
+            return
+        p_min = min(price_values)
+        p_max = max(price_values)
+        if p_max - p_min < 1e-9:
+            p_max = p_min + 1.0
 
-        # Horizontal grid lines
+        def y_price(v: float) -> float:
+            ratio = (v - p_min) / (p_max - p_min)
+            return y_price0 + (1 - ratio) * (y_price1 - y_price0)
+
+        # Volume panel scale
+        vol_values = [float(p.get("volume") or 0.0) for p in points]
+        v_max = max(vol_values) if vol_values else 1.0
+        if v_max <= 0:
+            v_max = 1.0
+
+        def y_vol(v: float) -> float:
+            ratio = v / v_max
+            return y_vol1 - ratio * (y_vol1 - y_vol0)
+
+        # RSI panel fixed scale 0-100
+        def y_rsi(v: float) -> float:
+            vv = max(0.0, min(100.0, v))
+            return y_rsi1 - (vv / 100.0) * (y_rsi1 - y_rsi0)
+
+        # Grid lines
         for g in range(5):
-            gy = top + (plot_h * g / 4)
+            gy = y_price0 + ((y_price1 - y_price0) * g / 4)
             canvas.create_line(left, gy, left + plot_w, gy, fill="#1E293B")
+        for level in (30, 50, 70):
+            gy = y_rsi(level)
+            color = "#334155" if level == 50 else "#475569"
+            canvas.create_line(left, gy, left + plot_w, gy, fill=color, dash=(3, 3))
 
-        # Draw candles first (wick + body).
-        n = len(points)
+        # Candles
         candle_slot = plot_w / max(n, 1)
         candle_w = max(min(candle_slot * 0.68, 18), 3)
         up_color = "#22C55E"
@@ -1097,22 +1191,16 @@ class FuturesBotUI:
             c = p.get("close")
             if None in (o, h, l, c):
                 continue
-
             o = float(o)
             h = float(h)
             l = float(l)
             c = float(c)
-            x = x_of(i, n)
-            wick_top = y_of(h)
-            wick_bottom = y_of(l)
-            body_top = y_of(max(o, c))
-            body_bottom = y_of(min(o, c))
+            x = x_of(i)
             color = up_color if c >= o else down_color
 
-            # Wick
-            canvas.create_line(x, wick_top, x, wick_bottom, fill=color, width=1)
-
-            # Body (minimum 1px height for visibility)
+            canvas.create_line(x, y_price(h), x, y_price(l), fill=color, width=1)
+            body_top = y_price(max(o, c))
+            body_bottom = y_price(min(o, c))
             if abs(body_bottom - body_top) < 1:
                 body_bottom = body_top + 1
             canvas.create_rectangle(
@@ -1124,7 +1212,8 @@ class FuturesBotUI:
                 outline=color,
             )
 
-        def draw_series(key: str, color: str, width_px: int = 2) -> None:
+        # MA lines
+        def draw_series(key: str, color: str, y_fn, width_px: int = 2) -> None:
             line_points: list[tuple[float, float]] = []
             for i, p in enumerate(points):
                 v = p.get(key)
@@ -1134,37 +1223,65 @@ class FuturesBotUI:
                         canvas.create_line(*flat, fill=color, width=width_px, smooth=True)
                     line_points = []
                     continue
-                line_points.append((x_of(i, len(points)), y_of(float(v))))
-
+                line_points.append((x_of(i), y_fn(float(v))))
             if len(line_points) >= 2:
                 flat = [coord for pt in line_points for coord in pt]
                 canvas.create_line(*flat, fill=color, width=width_px, smooth=True)
 
-        # MA lines
-        draw_series("short", "#22C55E", 2)
-        draw_series("long", "#F97316", 2)
+        draw_series("short", "#22C55E", y_price, 2)
+        draw_series("long", "#F97316", y_price, 2)
 
-        # Axis labels and legend
-        canvas.create_text(left - 8, top, text=f"{v_max:.2f}", fill="#94A3B8", anchor="e")
-        canvas.create_text(
-            left - 8, top + plot_h, text=f"{v_min:.2f}", fill="#94A3B8", anchor="e"
-        )
+        # Volume bars
+        for i, p in enumerate(points):
+            v = float(p.get("volume") or 0.0)
+            o = float(p.get("open") or 0.0)
+            c = float(p.get("close") or 0.0)
+            x = x_of(i)
+            bar_left = x - candle_w / 2
+            bar_right = x + candle_w / 2
+            color = up_color if c >= o else down_color
+            canvas.create_rectangle(
+                bar_left,
+                y_vol(v),
+                bar_right,
+                y_vol1,
+                fill=color,
+                outline=color,
+            )
+
+        # RSI line
+        draw_series("rsi", "#A78BFA", y_rsi, 2)
+
+        # Labels
+        canvas.create_text(left - 8, y_price0, text=f"{p_max:.2f}", fill="#94A3B8", anchor="e")
+        canvas.create_text(left - 8, y_price1, text=f"{p_min:.2f}", fill="#94A3B8", anchor="e")
+        canvas.create_text(left - 8, y_vol0, text=f"{v_max:.0f}", fill="#94A3B8", anchor="e")
+        canvas.create_text(left - 8, y_vol1, text="0", fill="#94A3B8", anchor="e")
+        canvas.create_text(left - 8, y_rsi0, text="100", fill="#94A3B8", anchor="e")
+        canvas.create_text(left - 8, y_rsi((70)), text="70", fill="#64748B", anchor="e")
+        canvas.create_text(left - 8, y_rsi((30)), text="30", fill="#64748B", anchor="e")
+        canvas.create_text(left - 8, y_rsi1, text="0", fill="#94A3B8", anchor="e")
+
         latest = points[-1].get("close")
         latest_txt = f"{float(latest):.2f}" if latest is not None else "-"
         canvas.create_text(
             left + 2,
-            top - 6,
+            y_price0 - 6,
             text=f"최근 종가: {latest_txt}",
             fill="#BFDBFE",
             anchor="sw",
             font=("Segoe UI", 10, "bold"),
         )
 
-        legend_y = top + plot_h + 16
-        canvas.create_text(left + 4, legend_y, text="■ 양봉", fill=up_color, anchor="w")
-        canvas.create_text(left + 58, legend_y, text="■ 음봉", fill=down_color, anchor="w")
-        canvas.create_text(left + 112, legend_y, text="● 단기 MA", fill="#22C55E", anchor="w")
-        canvas.create_text(left + 206, legend_y, text="● 장기 MA", fill="#F97316", anchor="w")
+        canvas.create_text(left + 4, y_price1 + 10, text="거래량", fill="#94A3B8", anchor="nw")
+        canvas.create_text(left + 4, y_rsi0 + 2, text="RSI(14)", fill="#A78BFA", anchor="nw")
+
+        legend_y = y_rsi1 + 4
+        canvas.create_text(left + 4, legend_y, text="■ 양봉", fill=up_color, anchor="nw")
+        canvas.create_text(left + 58, legend_y, text="■ 음봉", fill=down_color, anchor="nw")
+        canvas.create_text(left + 112, legend_y, text="● 단기 MA", fill="#22C55E", anchor="nw")
+        canvas.create_text(left + 206, legend_y, text="● 장기 MA", fill="#F97316", anchor="nw")
+        canvas.create_text(left + 300, legend_y, text="● RSI", fill="#A78BFA", anchor="nw")
 
     def _drain_log_queue(self) -> None:
         while not self.log_queue.empty():
