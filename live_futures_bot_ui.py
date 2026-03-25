@@ -527,9 +527,12 @@ class FuturesBotUI:
         }
         self.last_chart_points: list[dict] = []
         self.margin_mode_var = tk.StringVar(value="isolated")
+        self.bg_image: Optional[tk.PhotoImage] = None
+        self.bg_label: Optional[tk.Label] = None
 
         self._build_ui()
         self._load_env_to_form()
+        self._setup_background_image()
         self.root.after(250, self._drain_log_queue)
 
     def _resolve_base_dir(self) -> str:
@@ -779,6 +782,22 @@ class FuturesBotUI:
         self.trade_tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self._draw_chart([])
+
+    def _setup_background_image(self) -> None:
+        """
+        Loads optional background image from assets/ui_bg.png.
+        Tkinter PhotoImage supports PNG/GIF/PPM/PGM.
+        """
+        bg_path = os.path.join(self.base_dir, "assets", "ui_bg.png")
+        if not os.path.exists(bg_path):
+            return
+        try:
+            self.bg_image = tk.PhotoImage(file=bg_path)
+            self.bg_label = tk.Label(self.root, image=self.bg_image, bd=0)
+            self.bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+            self.bg_label.lower()
+        except Exception as exc:
+            self._log(f"[UI] 배경 이미지 로드 실패: {exc}")
 
     def _build_config_form(self, parent: ttk.LabelFrame) -> None:
         fields = [
