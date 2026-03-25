@@ -50,6 +50,16 @@ class FuturesBotEngine:
         self.daily_start_equity: Optional[float] = None
         self.daily_date = None
 
+    @staticmethod
+    def _signal_ko(signal: str) -> str:
+        mapping = {"LONG": "롱", "SHORT": "숏", "HOLD": "대기"}
+        return mapping.get(signal, signal)
+
+    @staticmethod
+    def _side_ko(side: str) -> str:
+        mapping = {"long": "롱", "short": "숏"}
+        return mapping.get(side.lower(), side)
+
     def _utc_now(self) -> datetime:
         return datetime.now(timezone.utc)
 
@@ -70,15 +80,15 @@ class FuturesBotEngine:
 
         try:
             self.exchange.set_margin_mode(self.config.margin_mode, self.config.symbol)
-            self.log(f"[SETUP] Margin mode set: {self.config.margin_mode}")
+            self.log(f"[설정] 마진 모드 설정: {self.config.margin_mode}")
         except Exception as exc:
-            self.log(f"[SETUP] Margin mode skipped: {exc}")
+            self.log(f"[설정] 마진 모드 설정 건너뜀: {exc}")
 
         try:
             self.exchange.set_leverage(self.config.leverage, self.config.symbol)
-            self.log(f"[SETUP] Leverage set: {self.config.leverage}x")
+            self.log(f"[설정] 레버리지 설정: {self.config.leverage}x")
         except Exception as exc:
-            self.log(f"[SETUP] Leverage skipped: {exc}")
+            self.log(f"[설정] 레버리지 설정 건너뜀: {exc}")
 
     def fetch_equity_usdt(self) -> float:
         balance = self.exchange.fetch_balance()
@@ -131,7 +141,7 @@ class FuturesBotEngine:
                 return None
             return {"side": side, "contracts": contracts}
         except Exception as exc:
-            self.log(f"[POS] fetch_positions failed: {exc}")
+            self.log(f"[포지션] 조회 실패: {exc}")
             return None
 
     def risk_guard(self) -> bool:
@@ -163,11 +173,11 @@ class FuturesBotEngine:
         )
 
         self.log(
-            f"[EQUITY] equity={equity:.2f} total={total_pct:.2f}% daily={daily_pct:.2f}%"
+            f"[자산] 잔고={equity:.2f} 누적={total_pct:.2f}% 일일={daily_pct:.2f}%"
         )
 
         if daily_pct <= -(self.config.max_daily_loss_pct * 100):
-            self.log("[RISK] Max daily loss reached. Bot stopped.")
+            self.log("[리스크] 일일 최대 손실 도달. 봇을 중지합니다.")
             return False
         return True
 
@@ -185,7 +195,7 @@ class FuturesBotEngine:
         min_amount = market.get("limits", {}).get("amount", {}).get("min")
         if min_amount and amount < float(min_amount):
             self.log(
-                f"[ORDER] amount {amount} below min {min_amount}, using min amount."
+                f"[주문] 수량 {amount}이 최소 수량 {min_amount}보다 작아 최소 수량으로 보정합니다."
             )
             amount = float(min_amount)
             amount = float(self.exchange.amount_to_precision(self.config.symbol, amount))
@@ -204,16 +214,16 @@ class FuturesBotEngine:
 
         amount = self.calc_amount(entry_price, stop_price)
         if amount <= 0:
-            self.log("[ORDER] amount <= 0, skip order.")
+            self.log("[주문] 수량이 0 이하라 주문을 건너뜁니다.")
             return
 
         self.log(
-            f"[ORDER PREP] {direction} amount={amount} entry={entry_price:.2f} "
+            f"[주문 준비] {direction} 수량={amount} 진입가={entry_price:.2f} "
             f"SL={stop_price:.2f} TP={take_price:.2f}"
         )
 
         if self.config.dry_run:
-            self.log("[DRY_RUN] No live order sent.")
+            self.log("[모의 실행] 실제 주문은 전송하지 않습니다.")
             return
 
         self.exchange.create_order(self.config.symbol, "market", entry_side, amount)
@@ -247,12 +257,12 @@ class FuturesBotEngine:
                 "workingType": "MARK_PRICE",
             },
         )
-        self.log("[ORDER] Entry + SL/TP orders submitted.")
+        self.log("[주문] 진입 + 손절/익절 주문 전송 완료.")
 
     def run(self) -> None:
-        self.log("[SYSTEM] Starting engine...")
+        self.log("[시스템] 엔진 시작 중...")
         self.setup_exchange()
-        self.log("[SYSTEM] Engine started.")
+        self.log("[시스템] 엔진 시작 완료.")
 
         while not self.stop_event.is_set():
             try:
@@ -265,15 +275,15 @@ class FuturesBotEngine:
                     {
                         "price": f"{price:.2f}",
                         "position": (
-                            "NONE"
+                            "없음"
                             if position is None
-                            else f"{position['side']} ({position['contracts']})"
+                            else f"{self._side_ko(position['side'])} ({position['contracts']})"
                         ),
-                        "signal": signal,
+                        "signal": self._signal_ko(signal),
                     }
                 )
 
-                self.log(f"[SIGNAL] final={signal} position={position}")
+                self.log(f"[신호] 최종={signal} 포지션={position}")
 
                 # beginner-safe behavior: only open a new position when flat
                 if position is None and signal in {"LONG", "SHORT"}:
@@ -281,26 +291,26 @@ class FuturesBotEngine:
 
             except Exception as exc:
                 text = str(exc)
-                self.log(f"[ERROR] {text}")
+                self.log(f"[오류] {text}")
                 if "1021" in text:
                     try:
                         self.exchange.load_time_difference()
-                        self.log("[TIME] Time difference reloaded.")
+                        self.log("[시간] 서버 시간 오차를 재동기화했습니다.")
                     except Exception as time_exc:
-                        self.log(f"[TIME] Reload failed: {time_exc}")
+                        self.log(f"[시간] 재동기화 실패: {time_exc}")
 
             for _ in range(self.config.loop_seconds):
                 if self.stop_event.is_set():
                     break
                 time.sleep(1)
 
-        self.log("[SYSTEM] Engine stopped.")
+        self.log("[시스템] 엔진 종료.")
 
 
 class FuturesBotUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Binance Futures Bot (Live/DRY)")
+        self.root.title("바이낸스 선물 자동매매 봇")
         self.root.geometry("1100x760")
 
         self.base_dir = self._resolve_base_dir()
@@ -324,7 +334,7 @@ class FuturesBotUI:
             "signal": tk.StringVar(value="-"),
             "daily_pnl_pct": tk.StringVar(value="-"),
             "total_pnl_pct": tk.StringVar(value="-"),
-            "mode": tk.StringVar(value="IDLE"),
+            "mode": tk.StringVar(value="대기"),
         }
 
         self._build_ui()
@@ -345,7 +355,7 @@ class FuturesBotUI:
 
         title = ttk.Label(
             root_frame,
-            text="Binance USDT-M Futures Trading Bot",
+            text="바이낸스 USDT-M 선물 자동매매",
             font=("Segoe UI", 16, "bold"),
         )
         title.pack(anchor="w", pady=(0, 12))
@@ -353,10 +363,10 @@ class FuturesBotUI:
         top = ttk.Frame(root_frame)
         top.pack(fill="x")
 
-        left = ttk.LabelFrame(top, text="Config", padding=12)
+        left = ttk.LabelFrame(top, text="설정", padding=12)
         left.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
-        right = ttk.LabelFrame(top, text="Live Status", padding=12)
+        right = ttk.LabelFrame(top, text="실시간 상태", padding=12)
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
         self._build_config_form(left)
@@ -365,16 +375,16 @@ class FuturesBotUI:
         controls = ttk.Frame(root_frame)
         controls.pack(fill="x", pady=12)
 
-        self.start_btn = ttk.Button(controls, text="Start Bot", command=self.start_bot)
+        self.start_btn = ttk.Button(controls, text="봇 시작", command=self.start_bot)
         self.start_btn.pack(side="left")
 
         self.stop_btn = ttk.Button(
-            controls, text="Stop Bot", command=self.stop_bot, state="disabled"
+            controls, text="봇 정지", command=self.stop_bot, state="disabled"
         )
         self.stop_btn.pack(side="left", padx=8)
 
         self.save_btn = ttk.Button(
-            controls, text="Save API to .env", command=self.save_env_from_form
+            controls, text="API 키 저장", command=self.save_env_from_form
         )
         self.save_btn.pack(side="left")
 
@@ -383,36 +393,38 @@ class FuturesBotUI:
         self.log_box.configure(state="disabled")
 
     def _build_config_form(self, parent: ttk.LabelFrame) -> None:
-        defaults = {
-            "api_key": "",
-            "api_secret": "",
-            "symbol": "BTC/USDT",
-            "timeframe": "5m",
-            "short_ma": "7",
-            "long_ma": "25",
-            "leverage": "2",
-            "margin_mode": "isolated",
-            "risk_per_trade": "0.003",
-            "stop_loss_pct": "0.007",
-            "take_profit_pct": "0.014",
-            "max_daily_loss_pct": "0.01",
-            "loop_seconds": "30",
-        }
+        fields = [
+            ("api_key", "API 키", ""),
+            ("api_secret", "API 시크릿", ""),
+            ("symbol", "심볼", "BTC/USDT"),
+            ("timeframe", "타임프레임", "5m"),
+            ("short_ma", "단기 MA", "7"),
+            ("long_ma", "장기 MA", "25"),
+            ("leverage", "레버리지", "2"),
+            ("margin_mode", "마진 모드", "isolated"),
+            ("risk_per_trade", "1회 리스크(비율)", "0.003"),
+            ("stop_loss_pct", "손절 비율", "0.007"),
+            ("take_profit_pct", "익절 비율", "0.014"),
+            ("max_daily_loss_pct", "일일 최대손실 비율", "0.01"),
+            ("loop_seconds", "반복 주기(초)", "30"),
+        ]
 
         row = 0
-        for key, value in defaults.items():
-            ttk.Label(parent, text=key).grid(row=row, column=0, sticky="w", pady=4)
+        for key, label, value in fields:
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
             var = tk.StringVar(value=value)
             self.vars[key] = var
             show = "*" if key == "api_secret" else None
             entry = ttk.Entry(parent, textvariable=var, width=36, show=show)
             entry.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 0))
+            if key in {"api_key", "api_secret"}:
+                entry.bind("<FocusOut>", self._on_api_focus_out)
             row += 1
 
         self.vars["live_mode"] = tk.BooleanVar(value=False)
         live_check = ttk.Checkbutton(
             parent,
-            text="Enable live trading (unchecked = DRY_RUN)",
+            text="실거래 사용 (체크 해제 시 모의 실행)",
             variable=self.vars["live_mode"],
         )
         live_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
@@ -421,13 +433,13 @@ class FuturesBotUI:
 
     def _build_status_panel(self, parent: ttk.LabelFrame) -> None:
         fields = [
-            ("Mode", "mode"),
-            ("Price", "price"),
-            ("Equity", "equity"),
-            ("Position", "position"),
-            ("Signal", "signal"),
-            ("Daily PnL %", "daily_pnl_pct"),
-            ("Total PnL %", "total_pnl_pct"),
+            ("모드", "mode"),
+            ("현재가", "price"),
+            ("자산", "equity"),
+            ("포지션", "position"),
+            ("신호", "signal"),
+            ("일일 수익률", "daily_pnl_pct"),
+            ("누적 수익률", "total_pnl_pct"),
         ]
         for i, (label, key) in enumerate(fields):
             ttk.Label(parent, text=label).grid(row=i, column=0, sticky="w", pady=4)
@@ -441,18 +453,28 @@ class FuturesBotUI:
         self.vars["api_key"].set(values.get("BINANCE_API_KEY", ""))
         self.vars["api_secret"].set(values.get("BINANCE_API_SECRET", ""))
 
-    def save_env_from_form(self) -> None:
+    def _save_env(self, show_popup: bool) -> bool:
         api_key = self.vars["api_key"].get().strip()
         api_secret = self.vars["api_secret"].get().strip()
         if not api_key or not api_secret:
-            messagebox.showerror("Missing API", "api_key and api_secret are required.")
-            return
+            if show_popup:
+                messagebox.showerror("API 누락", "API 키와 시크릿을 모두 입력하세요.")
+            return False
         if not os.path.exists(self.env_path):
             with open(self.env_path, "a", encoding="utf-8"):
                 pass
         set_key(self.env_path, "BINANCE_API_KEY", api_key)
         set_key(self.env_path, "BINANCE_API_SECRET", api_secret)
-        messagebox.showinfo("Saved", f"Saved to {self.env_path}")
+        if show_popup:
+            messagebox.showinfo("저장 완료", f"{self.env_path} 파일에 저장했습니다.")
+        return True
+
+    def save_env_from_form(self) -> None:
+        self._save_env(show_popup=True)
+
+    def _on_api_focus_out(self, _event=None) -> None:
+        # Save silently so users only type once.
+        self._save_env(show_popup=False)
 
     def _build_config(self) -> BotConfig:
         symbol = self.vars["symbol"].get().strip()
@@ -477,41 +499,44 @@ class FuturesBotUI:
 
     def start_bot(self) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
-            messagebox.showwarning("Running", "Bot is already running.")
+            messagebox.showwarning("실행 중", "이미 봇이 실행 중입니다.")
             return
 
         try:
             config = self._build_config()
         except Exception as exc:
-            messagebox.showerror("Invalid Config", str(exc))
+            messagebox.showerror("설정 오류", str(exc))
             return
 
         if not config.api_key or not config.api_secret:
-            messagebox.showerror("Missing API", "api_key and api_secret are required.")
+            messagebox.showerror("API 누락", "API 키와 시크릿을 모두 입력하세요.")
             return
         if config.long_ma <= config.short_ma:
             messagebox.showerror(
-                "Invalid MA", "long_ma must be greater than short_ma."
+                "MA 설정 오류", "장기 MA는 단기 MA보다 커야 합니다."
             )
             return
         if config.loop_seconds < 5:
-            messagebox.showerror("Invalid Loop", "loop_seconds must be >= 5.")
+            messagebox.showerror("반복 주기 오류", "반복 주기는 5초 이상이어야 합니다.")
             return
+
+        # Auto-save API keys when starting.
+        self._save_env(show_popup=False)
 
         if not config.dry_run:
             ok = messagebox.askyesno(
-                "Live Trading Confirmation",
-                "Live trading is ON.\nReal orders will be sent.\nContinue?",
+                "실거래 확인",
+                "실거래 모드가 켜져 있습니다.\n실제 주문이 전송됩니다.\n계속할까요?",
             )
             if not ok:
                 return
 
         self.stop_event.clear()
         self._log(
-            f"[SYSTEM] Starting bot. mode={'DRY_RUN' if config.dry_run else 'LIVE'} "
+            f"[시스템] 봇 시작. 모드={'모의 실행' if config.dry_run else '실거래'} "
             f"symbol={config.symbol} timeframe={config.timeframe}"
         )
-        self._update_status({"mode": "DRY_RUN" if config.dry_run else "LIVE"})
+        self._update_status({"mode": "모의 실행" if config.dry_run else "실거래"})
 
         engine = FuturesBotEngine(
             config=config,
@@ -527,10 +552,10 @@ class FuturesBotUI:
 
     def stop_bot(self) -> None:
         self.stop_event.set()
-        self._log("[SYSTEM] Stop requested by user.")
+        self._log("[시스템] 사용자 요청으로 정지합니다.")
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
-        self._update_status({"mode": "IDLE"})
+        self._update_status({"mode": "대기"})
 
     def on_close(self) -> None:
         self.stop_bot()
