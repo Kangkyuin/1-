@@ -677,6 +677,29 @@ class FuturesBotUI:
         self._build_config_form(left)
         self._build_status_panel(right)
 
+        chart_wrap = ttk.Frame(right)
+        chart_wrap.grid(row=20, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        chart_wrap.columnconfigure(0, weight=1)
+        chart_wrap.rowconfigure(1, weight=1)
+
+        chart_info = ttk.Label(
+            chart_wrap,
+            text="상단: 캔들+MA / 중단: 거래량 / 하단: RSI(14)",
+            style="Title.TLabel",
+            font=("Segoe UI", 9, "bold"),
+        )
+        chart_info.grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+        self.chart_canvas = tk.Canvas(
+            chart_wrap,
+            bg="#0B1220",
+            highlightthickness=0,
+            height=340,
+        )
+        self.chart_canvas.grid(row=1, column=0, sticky="nsew")
+        self.chart_canvas.bind("<Configure>", self._on_chart_resize)
+        right.rowconfigure(20, weight=1)
+
         controls = ttk.Frame(root_frame)
         controls.pack(fill="x", pady=12)
 
@@ -708,28 +731,10 @@ class FuturesBotUI:
         tabs = ttk.Notebook(root_frame)
         tabs.pack(fill="both", expand=True)
 
-        chart_tab = ttk.Frame(tabs)
         log_tab = ttk.Frame(tabs)
         trade_tab = ttk.Frame(tabs)
-        tabs.add(chart_tab, text="BTC 차트")
         tabs.add(log_tab, text="실행 로그")
         tabs.add(trade_tab, text="체결내역")
-
-        chart_info = ttk.Label(
-            chart_tab,
-            text="상단: 캔들+MA / 중단: 거래량 / 하단: RSI(14)",
-            style="Title.TLabel",
-            font=("Segoe UI", 10, "bold"),
-        )
-        chart_info.pack(anchor="w", padx=8, pady=(8, 4))
-
-        self.chart_canvas = tk.Canvas(
-            chart_tab,
-            bg="#0B1220",
-            highlightthickness=0,
-        )
-        self.chart_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        self.chart_canvas.bind("<Configure>", self._on_chart_resize)
 
         self.log_box = ScrolledText(
             log_tab,
@@ -789,7 +794,6 @@ class FuturesBotUI:
             ("short_ma", "단기 MA", "7"),
             ("long_ma", "장기 MA", "25"),
             ("leverage", "레버리지", "2"),
-            ("margin_mode", "마진 모드", "isolated"),
             ("risk_per_trade", "1회 리스크(비율)", "0.003"),
             ("stop_loss_pct", "손절 비율", "0.007"),
             ("take_profit_pct", "익절 비율", "0.014"),
@@ -889,6 +893,14 @@ class FuturesBotUI:
         self.vars["telegram_enabled"].set(
             str(values.get("TELEGRAM_ENABLED", "false")).lower() in {"1", "true", "yes"}
         )
+        margin_mode = str(values.get("MARGIN_MODE", "isolated")).strip().lower()
+        if margin_mode not in {"isolated", "cross"}:
+            margin_mode = "isolated"
+        self._select_margin_mode(margin_mode)
+        margin_mode = str(values.get("BINANCE_MARGIN_MODE", "isolated")).strip().lower()
+        if margin_mode not in {"isolated", "cross"}:
+            margin_mode = "isolated"
+        self._select_margin_mode(margin_mode)
 
     def _save_env(self, show_popup: bool) -> bool:
         api_key = self.vars["api_key"].get().strip()
@@ -919,6 +931,12 @@ class FuturesBotUI:
             "TELEGRAM_ENABLED",
             "true" if self.vars["telegram_enabled"].get() else "false",
         )
+        set_key(
+            self.env_path,
+            "MARGIN_MODE",
+            self.vars["margin_mode"].get().strip().lower(),
+        )
+        set_key(self.env_path, "BINANCE_MARGIN_MODE", self.vars["margin_mode"].get().strip())
 
         if show_popup:
             messagebox.showinfo("저장 완료", f"{self.env_path} 파일에 저장했습니다.")
