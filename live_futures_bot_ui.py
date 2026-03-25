@@ -149,7 +149,7 @@ class FuturesBotEngine:
             usdt_total = free + used
         return float(usdt_total or 0.0)
 
-    def get_ma_signal(self) -> tuple[str, float]:
+    def get_ma_signal(self) -> tuple[str, float, list[dict]]:
         candles = self.exchange.fetch_ohlcv(
             self.config.symbol,
             timeframe=self.config.timeframe,
@@ -171,13 +171,28 @@ class FuturesBotEngine:
             f"curr_diff={curr_diff:.4f}"
         )
 
+        # Prepare chart data from closed candles only (exclude last in-progress candle).
+        closed_df = df.iloc[:-1].copy()
+        chart_df = closed_df.tail(80)
+        chart_points: list[dict] = []
+        for _, row in chart_df.iterrows():
+            short_val = row["short"]
+            long_val = row["long"]
+            chart_points.append(
+                {
+                    "close": float(row["close"]),
+                    "short": None if pd.isna(short_val) else float(short_val),
+                    "long": None if pd.isna(long_val) else float(long_val),
+                }
+            )
+
         if pd.isna(prev_diff) or pd.isna(curr_diff):
-            return "HOLD", close_price
+            return "HOLD", close_price, chart_points
         if prev_diff <= 0 and curr_diff > 0:
-            return "LONG", close_price
+            return "LONG", close_price, chart_points
         if prev_diff >= 0 and curr_diff < 0:
-            return "SHORT", close_price
-        return "HOLD", close_price
+            return "SHORT", close_price, chart_points
+        return "HOLD", close_price, chart_points
 
     def get_position(self) -> Optional[dict]:
         try:
@@ -413,7 +428,7 @@ class FuturesBotEngine:
                 if not self.risk_guard():
                     break
 
-                signal, price = self.get_ma_signal()
+                signal, price, chart_points = self.get_ma_signal()
                 position = self.get_position()
                 self.sync_recent_trades()
 
@@ -446,6 +461,7 @@ class FuturesBotEngine:
                             else f"{self._side_ko(position['side'])} ({position['contracts']})"
                         ),
                         "signal": self._signal_ko(signal),
+                        "chart": chart_points,
                     }
                 )
 
@@ -503,6 +519,7 @@ class FuturesBotUI:
             "total_pnl_pct": tk.StringVar(value="-"),
             "mode": tk.StringVar(value="대기"),
         }
+        self.last_chart_points: list[dict] = []
 
         self._build_ui()
         self._load_env_to_form()
@@ -659,10 +676,28 @@ class FuturesBotUI:
         tabs = ttk.Notebook(root_frame)
         tabs.pack(fill="both", expand=True)
 
+        chart_tab = ttk.Frame(tabs)
         log_tab = ttk.Frame(tabs)
         trade_tab = ttk.Frame(tabs)
+        tabs.add(chart_tab, text="BTC 차트")
         tabs.add(log_tab, text="실행 로그")
         tabs.add(trade_tab, text="체결내역")
+
+        chart_info = ttk.Label(
+            chart_tab,
+            text="최근 종가 + 단기/장기 MA (확정봉 기준)",
+            style="Title.TLabel",
+            font=("Segoe UI", 10, "bold"),
+        )
+        chart_info.pack(anchor="w", padx=8, pady=(8, 4))
+
+        self.chart_canvas = tk.Canvas(
+            chart_tab,
+            bg="#0B1220",
+            highlightthickness=0,
+        )
+        self.chart_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.chart_canvas.bind("<Configure>", self._on_chart_resize)
 
         self.log_box = ScrolledText(
             log_tab,
@@ -711,6 +746,7 @@ class FuturesBotUI:
         scroll = ttk.Scrollbar(trade_tab, orient="vertical", command=self.trade_tree.yview)
         self.trade_tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
+        self._draw_chart([])
 
     def _build_config_form(self, parent: ttk.LabelFrame) -> None:
         fields = [
@@ -968,6 +1004,116 @@ class FuturesBotUI:
             for item in items[:-500]:
                 self.trade_tree.delete(item)
 
+    def _on_chart_resize(self, _event=None) -> None:
+        self._draw_chart(self.last_chart_points)
+
+    def _draw_chart(self, points: list[dict]) -> None:
+        canvas = self.chart_canvas
+        canvas.delete("all")
+
+        width = max(canvas.winfo_width(), 100)
+        height = max(canvas.winfo_height(), 100)
+        if width < 120 or height < 120:
+            return
+
+        # Plot paddings
+        left = 56
+        right = 16
+        top = 18
+        bottom = 30
+        plot_w = max(width - left - right, 20)
+        plot_h = max(height - top - bottom, 20)
+
+        # Background plot area
+        canvas.create_rectangle(
+            left,
+            top,
+            left + plot_w,
+            top + plot_h,
+            outline="#1E293B",
+            fill="#0B1220",
+        )
+
+        if not points:
+            canvas.create_text(
+                width / 2,
+                height / 2,
+                text="차트 데이터 대기 중...",
+                fill="#94A3B8",
+                font=("Segoe UI", 11),
+            )
+            return
+
+        values: list[float] = []
+        for p in points:
+            for key in ("close", "short", "long"):
+                v = p.get(key)
+                if v is not None:
+                    values.append(float(v))
+        if not values:
+            return
+
+        v_min = min(values)
+        v_max = max(values)
+        if v_max - v_min < 1e-9:
+            v_max = v_min + 1.0
+
+        def x_of(i: int, n: int) -> float:
+            if n <= 1:
+                return left
+            return left + (i / (n - 1)) * plot_w
+
+        def y_of(v: float) -> float:
+            ratio = (v - v_min) / (v_max - v_min)
+            return top + (1 - ratio) * plot_h
+
+        # Horizontal grid lines
+        for g in range(5):
+            gy = top + (plot_h * g / 4)
+            canvas.create_line(left, gy, left + plot_w, gy, fill="#1E293B")
+
+        def draw_series(key: str, color: str, width_px: int = 2) -> None:
+            line_points: list[tuple[float, float]] = []
+            for i, p in enumerate(points):
+                v = p.get(key)
+                if v is None:
+                    if len(line_points) >= 2:
+                        flat = [coord for pt in line_points for coord in pt]
+                        canvas.create_line(*flat, fill=color, width=width_px, smooth=True)
+                    line_points = []
+                    continue
+                line_points.append((x_of(i, len(points)), y_of(float(v))))
+
+            if len(line_points) >= 2:
+                flat = [coord for pt in line_points for coord in pt]
+                canvas.create_line(*flat, fill=color, width=width_px, smooth=True)
+
+        # close/short/long lines
+        draw_series("close", "#60A5FA", 2)
+        draw_series("short", "#22C55E", 2)
+        draw_series("long", "#F97316", 2)
+
+        # Axis labels and legend
+        canvas.create_text(left - 8, top, text=f"{v_max:.2f}", fill="#94A3B8", anchor="e")
+        canvas.create_text(
+            left - 8, top + plot_h, text=f"{v_min:.2f}", fill="#94A3B8", anchor="e"
+        )
+        latest = points[-1].get("close")
+        latest_txt = f"{float(latest):.2f}" if latest is not None else "-"
+        canvas.create_text(
+            left + 2,
+            top - 6,
+            text=f"최근 종가: {latest_txt}",
+            fill="#BFDBFE",
+            anchor="sw",
+            font=("Segoe UI", 10, "bold"),
+        )
+
+        legend_y = top + plot_h + 16
+        canvas.create_text(left + 4, legend_y, text="● 종가", fill="#60A5FA", anchor="w")
+        canvas.create_text(left + 74, legend_y, text="● 단기 MA", fill="#22C55E", anchor="w")
+        canvas.create_text(left + 168, legend_y, text="● 장기 MA", fill="#F97316", anchor="w")
+
     def _drain_log_queue(self) -> None:
         while not self.log_queue.empty():
             kind, payload = self.log_queue.get()
@@ -977,9 +1123,13 @@ class FuturesBotUI:
                 self.log_box.see("end")
                 self.log_box.configure(state="disabled")
             elif kind == "status":
+                chart_data = payload.get("chart")
                 for key, value in payload.items():
                     if key in self.status_vars:
                         self.status_vars[key].set(value)
+                if isinstance(chart_data, list):
+                    self.last_chart_points = chart_data
+                    self._draw_chart(chart_data)
             elif kind == "trade":
                 self._insert_trade_row(payload)
         self.root.after(250, self._drain_log_queue)
