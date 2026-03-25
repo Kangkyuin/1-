@@ -822,7 +822,7 @@ class FuturesBotUI:
 
         self.vars["live_mode"] = tk.BooleanVar(value=False)
         self.vars["telegram_enabled"] = tk.BooleanVar(value=False)
-        self.margin_mode_var = tk.StringVar(value="isolated")
+        self.vars["margin_mode"] = tk.StringVar(value="isolated")
 
         live_check = ttk.Checkbutton(
             parent,
@@ -893,10 +893,6 @@ class FuturesBotUI:
         self.vars["telegram_enabled"].set(
             str(values.get("TELEGRAM_ENABLED", "false")).lower() in {"1", "true", "yes"}
         )
-        margin_mode = str(values.get("MARGIN_MODE", "isolated")).strip().lower()
-        if margin_mode not in {"isolated", "cross"}:
-            margin_mode = "isolated"
-        self._select_margin_mode(margin_mode)
         margin_mode = str(values.get("BINANCE_MARGIN_MODE", "isolated")).strip().lower()
         if margin_mode not in {"isolated", "cross"}:
             margin_mode = "isolated"
