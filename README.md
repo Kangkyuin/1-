@@ -1,101 +1,121 @@
 # Binance Futures Live Bot (UI + EXE)
 
-실제 바이낸스 USDT-M 선물 계정에서 동작 가능한 파이썬 GUI 봇 예제입니다.
+실제 바이낸스 USDT-M 선물 계정에서 동작하는 파이썬 GUI 자동매매 봇입니다.
 
-> 경고: 실거래는 손실 위험이 큽니다. 반드시 소액, 낮은 레버리지, 충분한 모의검증 후 사용하세요.
-
----
-
-## 1) 파일 구성
-
-- `live_futures_bot_ui.py` : GUI 실행 앱 (실거래/드라이런 전환 가능)
-- `.env` (직접 생성) : API 키 저장
-- `logs/` : 실행 중 로그 자동 저장
+> 경고: 실거래는 손실 위험이 큽니다. 반드시 소액/저레버리지/충분한 검증 후 사용하세요.
 
 ---
 
-## 2) 설치 (Windows PowerShell)
+## 1) 주요 기능
+
+- 한국어 UI (다크 테마)
+- 실거래 / 모의 실행(DRY_RUN) 전환
+- 이동평균 교차 전략
+- 손절/익절 보호주문 자동 생성
+- 일일 손실 제한 도달 시 자동 중지
+- API 키 자동 저장/자동 불러오기
+- 체결내역 테이블 (실시간 업데이트)
+- 텔레그램 알림 (진입/청산/오류/리스크)
+
+---
+
+## 2) 파일 구성
+
+- `live_futures_bot_ui.py` : 메인 GUI 앱
+- `.env` : API 키/텔레그램 설정 저장
+- `logs/` : 실행 로그 파일 (`bot_YYYYMMDD.log`)
+
+---
+
+## 3) 설치 (Windows PowerShell)
 
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install --upgrade pip
-pip install ccxt pandas python-dotenv
+python -m pip install --upgrade pip
+python -m pip install ccxt pandas python-dotenv
 ```
 
 ---
 
-## 3) .env 만들기
-
-프로젝트 루트에 `.env` 파일 생성:
-
-```env
-BINANCE_API_KEY=여기에_실거래_API_KEY
-BINANCE_API_SECRET=여기에_실거래_SECRET
-```
-
-권장:
-- API 권한은 선물 주문에 필요한 최소 권한만
-- 출금 권한은 OFF
-- IP 화이트리스트 사용
-
----
-
-## 4) 앱 실행
+## 4) 실행
 
 ```powershell
 python .\live_futures_bot_ui.py
 ```
 
-실행 후 UI에서:
-1. API 연결 확인
-2. 심볼/타임프레임/레버리지/리스크 설정
-3. DRY RUN 체크 상태로 먼저 시작
-4. 로그 확인 후 LIVE TRADING으로 전환
+처음 실행 순서:
+1. API 키/시크릿 입력 (포커스 아웃 또는 시작 시 자동 저장)
+2. 전략/리스크 값 설정
+3. **모의 실행**으로 먼저 시작
+4. 로그/체결내역 확인 후 실거래 모드 전환
 
 ---
 
-## 5) 매매 로직 (기본)
+## 5) 텔레그램 알림 설정 (선택)
 
-- 전략: 이동평균 교차
-  - LONG: 단기MA가 장기MA 상향 돌파
-  - SHORT: 단기MA가 장기MA 하향 돌파
-- 포지션이 없을 때만 신규 진입
-- 진입 시 동시에 보호주문:
-  - 손절: `STOP_MARKET` + `reduceOnly`
-  - 익절: `TAKE_PROFIT_MARKET` + `reduceOnly`
-- 일일 손실 제한 도달 시 자동 중지
+UI에서 아래 3개 입력 후 저장:
+- 텔레그램 알림 사용 (체크)
+- 텔레그램 봇 토큰
+- 텔레그램 채팅 ID
 
----
+`.env`에도 자동 저장됩니다:
 
-## 6) EXE 빌드
-
-### 6-1. PyInstaller 설치
-
-```powershell
-pip install pyinstaller
+```env
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=123456:ABC...
+TELEGRAM_CHAT_ID=123456789
 ```
 
-### 6-2. 빌드 실행
+알림 이벤트:
+- 봇 시작/종료
+- 진입 주문 전송
+- 청산 감지
+- 오류 발생
+- 일일 손실 한도 도달
+
+---
+
+## 6) 매매 로직
+
+- LONG: 단기 MA가 장기 MA를 상향 돌파
+- SHORT: 단기 MA가 장기 MA를 하향 돌파
+- 포지션이 없을 때만 신규 진입
+- 진입 시:
+  - `STOP_MARKET` + `reduceOnly` 손절
+  - `TAKE_PROFIT_MARKET` + `reduceOnly` 익절
+- 일일 손실 한도(`max_daily_loss_pct`) 도달 시 봇 중지
+
+---
+
+## 7) EXE 빌드
+
+### 7-1. PyInstaller 설치
+
+```powershell
+python -m pip install pyinstaller
+```
+
+### 7-2. 빌드
 
 ```powershell
 pyinstaller --noconfirm --windowed --name BinanceFuturesBot live_futures_bot_ui.py
 ```
 
-### 6-3. 실행 파일 위치
+### 7-3. 실행 파일
 
 - `dist\BinanceFuturesBot\BinanceFuturesBot.exe`
 
 주의:
-- exe 옆(또는 실행 작업 폴더)에 `.env` 파일이 있어야 API 키를 읽습니다.
-- 처음에는 반드시 DRY RUN으로 검증하세요.
+- exe와 같은 작업 경로에 `.env`가 있어야 설정 로드 가능
+- 처음에는 반드시 모의 실행으로 테스트
 
 ---
 
-## 7) 운영 체크리스트
+## 8) 운영 체크리스트
 
-- [ ] 레버리지 2~3 이하로 시작
-- [ ] 거래당 리스크 0.2%~0.5%
+- [ ] 레버리지 2~3 이하 시작
+- [ ] 1회 리스크 0.2%~0.5%
 - [ ] 일일 손실 제한 1% 내외
-- [ ] 최소 1~2주 드라이런/소액 실거래 로그 점검
-- [ ] 에러 로그 확인 후 자동 재시작(운영 시)
+- [ ] 모의 실행 및 소액 실거래 로그 충분히 검증
+- [ ] 오류 알림(텔레그램) 정상 수신 확인

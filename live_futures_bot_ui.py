@@ -3,6 +3,8 @@ import queue
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -31,6 +33,42 @@ class BotConfig:
     max_daily_loss_pct: float
     loop_seconds: int
     dry_run: bool
+    telegram_enabled: bool
+    telegram_bot_token: str
+    telegram_chat_id: str
+
+
+class TelegramNotifier:
+    def __init__(self, enabled: bool, bot_token: str, chat_id: str):
+        self.enabled = enabled and bool(bot_token) and bool(chat_id)
+        self.bot_token = bot_token.strip()
+        self.chat_id = chat_id.strip()
+
+    def send_async(self, message: str) -> None:
+        if not self.enabled:
+            return
+        thread = threading.Thread(
+            target=self._send_sync,
+            args=(message,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _send_sync(self, message: str) -> None:
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            payload = urllib.parse.urlencode(
+                {
+                    "chat_id": self.chat_id,
+                    "text": message,
+                    "disable_web_page_preview": "true",
+                }
+            ).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, method="POST")
+            with urllib.request.urlopen(req, timeout=10):
+                pass
+        except Exception:
+            pass
 
 
 class FuturesBotEngine:
@@ -39,16 +77,25 @@ class FuturesBotEngine:
         config: BotConfig,
         log_cb: Callable[[str], None],
         state_cb: Callable[[dict], None],
+        trade_cb: Callable[[dict], None],
         stop_event: threading.Event,
     ):
         self.config = config
         self.log = log_cb
         self.state_cb = state_cb
+        self.trade_cb = trade_cb
         self.stop_event = stop_event
+        self.notifier = TelegramNotifier(
+            enabled=config.telegram_enabled,
+            bot_token=config.telegram_bot_token,
+            chat_id=config.telegram_chat_id,
+        )
         self.exchange = None
         self.initial_equity: Optional[float] = None
         self.daily_start_equity: Optional[float] = None
         self.daily_date = None
+        self.seen_trade_ids: set[str] = set()
+        self.last_position_snapshot: Optional[dict] = None
 
     @staticmethod
     def _signal_ko(signal: str) -> str:
@@ -57,11 +104,14 @@ class FuturesBotEngine:
 
     @staticmethod
     def _side_ko(side: str) -> str:
-        mapping = {"long": "롱", "short": "숏"}
-        return mapping.get(side.lower(), side)
+        mapping = {"long": "롱", "short": "숏", "buy": "매수", "sell": "매도"}
+        return mapping.get((side or "").lower(), side)
 
     def _utc_now(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    def _notify(self, message: str) -> None:
+        self.notifier.send_async(message)
 
     def setup_exchange(self) -> None:
         self.exchange = ccxt.binanceusdm(
@@ -144,6 +194,55 @@ class FuturesBotEngine:
             self.log(f"[포지션] 조회 실패: {exc}")
             return None
 
+    def sync_recent_trades(self) -> None:
+        try:
+            since_ms = self.exchange.milliseconds() - (6 * 60 * 60 * 1000)
+            trades = self.exchange.fetch_my_trades(
+                self.config.symbol,
+                since=since_ms,
+                limit=100,
+            )
+        except Exception as exc:
+            self.log(f"[체결] 조회 실패: {exc}")
+            return
+
+        for t in trades:
+            trade_id = str(t.get("id") or t.get("order") or "")
+            if not trade_id:
+                trade_id = f"{t.get('timestamp')}-{t.get('side')}-{t.get('amount')}"
+            if trade_id in self.seen_trade_ids:
+                continue
+            self.seen_trade_ids.add(trade_id)
+
+            ts = t.get("timestamp")
+            if ts:
+                when = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).astimezone()
+                when_text = when.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                when_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            side = (t.get("side") or "").upper()
+            amount = t.get("amount")
+            price = t.get("price")
+            fee = t.get("fee", {}).get("cost")
+            fee_currency = t.get("fee", {}).get("currency")
+
+            self.trade_cb(
+                {
+                    "time": when_text,
+                    "event": "체결",
+                    "side": self._side_ko(side),
+                    "amount": f"{amount}" if amount is not None else "-",
+                    "price": f"{price}" if price is not None else "-",
+                    "status": "완료",
+                    "note": (
+                        f"수수료={fee} {fee_currency}"
+                        if fee is not None
+                        else "거래소 체결내역"
+                    ),
+                }
+            )
+
     def risk_guard(self) -> bool:
         equity = self.fetch_equity_usdt()
         if self.initial_equity is None:
@@ -178,6 +277,9 @@ class FuturesBotEngine:
 
         if daily_pct <= -(self.config.max_daily_loss_pct * 100):
             self.log("[리스크] 일일 최대 손실 도달. 봇을 중지합니다.")
+            self._notify(
+                f"[리스크 경고]\n{self.config.symbol}\n일일 손실 한도 도달: {daily_pct:.2f}%"
+            )
             return False
         return True
 
@@ -217,13 +319,36 @@ class FuturesBotEngine:
             self.log("[주문] 수량이 0 이하라 주문을 건너뜁니다.")
             return
 
+        side_ko = "롱" if direction == "LONG" else "숏"
         self.log(
-            f"[주문 준비] {direction} 수량={amount} 진입가={entry_price:.2f} "
+            f"[주문 준비] {side_ko} 수량={amount} 진입가={entry_price:.2f} "
             f"SL={stop_price:.2f} TP={take_price:.2f}"
+        )
+        self.trade_cb(
+            {
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "event": "진입시도",
+                "side": side_ko,
+                "amount": f"{amount}",
+                "price": f"{entry_price:.2f}",
+                "status": "준비",
+                "note": f"SL={stop_price:.2f}, TP={take_price:.2f}",
+            }
         )
 
         if self.config.dry_run:
             self.log("[모의 실행] 실제 주문은 전송하지 않습니다.")
+            self.trade_cb(
+                {
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "event": "진입",
+                    "side": side_ko,
+                    "amount": f"{amount}",
+                    "price": f"{entry_price:.2f}",
+                    "status": "DRY_RUN",
+                    "note": "실주문 미전송",
+                }
+            )
             return
 
         self.exchange.create_order(self.config.symbol, "market", entry_side, amount)
@@ -257,12 +382,31 @@ class FuturesBotEngine:
                 "workingType": "MARK_PRICE",
             },
         )
+
         self.log("[주문] 진입 + 손절/익절 주문 전송 완료.")
+        self.trade_cb(
+            {
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "event": "진입",
+                "side": side_ko,
+                "amount": f"{amount}",
+                "price": f"{entry_price:.2f}",
+                "status": "전송완료",
+                "note": "손절/익절 보호주문 생성",
+            }
+        )
+        self._notify(
+            f"[진입]\n{self.config.symbol}\n방향: {side_ko}\n수량: {amount}\n"
+            f"진입가: {entry_price:.2f}\nSL: {stop_price:.2f} / TP: {take_price:.2f}"
+        )
 
     def run(self) -> None:
         self.log("[시스템] 엔진 시작 중...")
         self.setup_exchange()
         self.log("[시스템] 엔진 시작 완료.")
+        self._notify(
+            f"[봇 시작]\n{self.config.symbol}\n모드: {'모의 실행' if self.config.dry_run else '실거래'}"
+        )
 
         while not self.stop_event.is_set():
             try:
@@ -271,6 +415,28 @@ class FuturesBotEngine:
 
                 signal, price = self.get_ma_signal()
                 position = self.get_position()
+                self.sync_recent_trades()
+
+                if self.last_position_snapshot is not None and position is None:
+                    prev = self.last_position_snapshot
+                    side_text = self._side_ko(str(prev.get("side", "")))
+                    qty_text = str(prev.get("contracts", "-"))
+                    self.trade_cb(
+                        {
+                            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "event": "청산",
+                            "side": side_text,
+                            "amount": qty_text,
+                            "price": "-",
+                            "status": "포지션종료",
+                            "note": "손절/익절/수동 청산",
+                        }
+                    )
+                    self._notify(
+                        f"[청산 감지]\n{self.config.symbol}\n이전 포지션: {side_text} {qty_text}"
+                    )
+                self.last_position_snapshot = position
+
                 self.state_cb(
                     {
                         "price": f"{price:.2f}",
@@ -284,14 +450,13 @@ class FuturesBotEngine:
                 )
 
                 self.log(f"[신호] 최종={signal} 포지션={position}")
-
-                # beginner-safe behavior: only open a new position when flat
                 if position is None and signal in {"LONG", "SHORT"}:
                     self.place_entry_with_brackets(signal, price)
 
             except Exception as exc:
                 text = str(exc)
                 self.log(f"[오류] {text}")
+                self._notify(f"[오류]\n{self.config.symbol}\n{text}")
                 if "1021" in text:
                     try:
                         self.exchange.load_time_difference()
@@ -305,13 +470,15 @@ class FuturesBotEngine:
                 time.sleep(1)
 
         self.log("[시스템] 엔진 종료.")
+        self._notify(f"[봇 종료]\n{self.config.symbol}")
 
 
 class FuturesBotUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("바이낸스 선물 자동매매 봇")
-        self.root.geometry("1100x760")
+        self.root.geometry("1280x860")
+        self.root.minsize(1160, 780)
 
         self.base_dir = self._resolve_base_dir()
         self.env_path = os.path.join(self.base_dir, ".env")
@@ -346,9 +513,95 @@ class FuturesBotUI:
             return os.path.dirname(sys.executable)
         return os.path.dirname(os.path.abspath(__file__))
 
+    def _apply_dark_theme(self, style: ttk.Style) -> None:
+        bg = "#0F172A"
+        card = "#111827"
+        input_bg = "#1F2937"
+        fg = "#E5E7EB"
+        accent = "#2563EB"
+        danger = "#DC2626"
+
+        self.root.configure(bg=bg)
+        style.configure(".", background=bg, foreground=fg)
+        style.configure("TFrame", background=bg)
+        style.configure("Card.TLabelframe", background=card, foreground=fg)
+        style.configure("Card.TLabelframe.Label", background=card, foreground="#93C5FD")
+        style.configure("Title.TLabel", background=bg, foreground="#BFDBFE")
+        style.configure("TLabel", background=card, foreground=fg)
+        style.configure(
+            "TEntry",
+            fieldbackground=input_bg,
+            foreground="#F9FAFB",
+            insertcolor="#F9FAFB",
+        )
+        style.configure(
+            "TCheckbutton",
+            background=card,
+            foreground=fg,
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", card)],
+            foreground=[("active", "#BFDBFE")],
+        )
+        style.configure(
+            "Accent.TButton",
+            background=accent,
+            foreground="#FFFFFF",
+            padding=(10, 6),
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", "#1D4ED8"), ("disabled", "#334155")],
+            foreground=[("disabled", "#94A3B8")],
+        )
+        style.configure(
+            "Danger.TButton",
+            background=danger,
+            foreground="#FFFFFF",
+            padding=(10, 6),
+        )
+        style.map(
+            "Danger.TButton",
+            background=[("active", "#B91C1C"), ("disabled", "#334155")],
+            foreground=[("disabled", "#94A3B8")],
+        )
+        style.configure(
+            "Secondary.TButton",
+            background="#334155",
+            foreground="#E5E7EB",
+            padding=(10, 6),
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#475569"), ("disabled", "#334155")],
+            foreground=[("disabled", "#94A3B8")],
+        )
+        style.configure(
+            "Trades.Treeview",
+            background=input_bg,
+            fieldbackground=input_bg,
+            foreground="#E5E7EB",
+            rowheight=24,
+            bordercolor="#334155",
+            borderwidth=0,
+        )
+        style.configure(
+            "Trades.Treeview.Heading",
+            background="#1E293B",
+            foreground="#BFDBFE",
+            relief="flat",
+        )
+        style.map(
+            "Trades.Treeview",
+            background=[("selected", "#1D4ED8")],
+            foreground=[("selected", "#FFFFFF")],
+        )
+
     def _build_ui(self) -> None:
         style = ttk.Style(self.root)
         style.theme_use("clam")
+        self._apply_dark_theme(style)
 
         root_frame = ttk.Frame(self.root, padding=16)
         root_frame.pack(fill="both", expand=True)
@@ -356,17 +609,20 @@ class FuturesBotUI:
         title = ttk.Label(
             root_frame,
             text="바이낸스 USDT-M 선물 자동매매",
-            font=("Segoe UI", 16, "bold"),
+            style="Title.TLabel",
+            font=("Segoe UI", 17, "bold"),
         )
         title.pack(anchor="w", pady=(0, 12))
 
         top = ttk.Frame(root_frame)
         top.pack(fill="x")
 
-        left = ttk.LabelFrame(top, text="설정", padding=12)
+        left = ttk.LabelFrame(top, text="설정", style="Card.TLabelframe", padding=12)
         left.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
-        right = ttk.LabelFrame(top, text="실시간 상태", padding=12)
+        right = ttk.LabelFrame(
+            top, text="실시간 상태", style="Card.TLabelframe", padding=12
+        )
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
         self._build_config_form(left)
@@ -375,22 +631,86 @@ class FuturesBotUI:
         controls = ttk.Frame(root_frame)
         controls.pack(fill="x", pady=12)
 
-        self.start_btn = ttk.Button(controls, text="봇 시작", command=self.start_bot)
+        self.start_btn = ttk.Button(
+            controls,
+            text="봇 시작",
+            style="Accent.TButton",
+            command=self.start_bot,
+        )
         self.start_btn.pack(side="left")
 
         self.stop_btn = ttk.Button(
-            controls, text="봇 정지", command=self.stop_bot, state="disabled"
+            controls,
+            text="봇 정지",
+            style="Danger.TButton",
+            command=self.stop_bot,
+            state="disabled",
         )
         self.stop_btn.pack(side="left", padx=8)
 
         self.save_btn = ttk.Button(
-            controls, text="API 키 저장", command=self.save_env_from_form
+            controls,
+            text="설정 저장",
+            style="Secondary.TButton",
+            command=self.save_env_from_form,
         )
         self.save_btn.pack(side="left")
 
-        self.log_box = ScrolledText(root_frame, height=22, font=("Consolas", 10))
+        tabs = ttk.Notebook(root_frame)
+        tabs.pack(fill="both", expand=True)
+
+        log_tab = ttk.Frame(tabs)
+        trade_tab = ttk.Frame(tabs)
+        tabs.add(log_tab, text="실행 로그")
+        tabs.add(trade_tab, text="체결내역")
+
+        self.log_box = ScrolledText(
+            log_tab,
+            height=18,
+            font=("Consolas", 10),
+            bg="#0B1220",
+            fg="#E5E7EB",
+            insertbackground="#E5E7EB",
+            relief="flat",
+        )
         self.log_box.pack(fill="both", expand=True)
         self.log_box.configure(state="disabled")
+
+        columns = ("time", "event", "side", "amount", "price", "status", "note")
+        self.trade_tree = ttk.Treeview(
+            trade_tab,
+            columns=columns,
+            show="headings",
+            style="Trades.Treeview",
+            height=18,
+        )
+        headers = {
+            "time": "시간",
+            "event": "이벤트",
+            "side": "방향",
+            "amount": "수량",
+            "price": "가격",
+            "status": "상태",
+            "note": "비고",
+        }
+        widths = {
+            "time": 170,
+            "event": 90,
+            "side": 80,
+            "amount": 100,
+            "price": 120,
+            "status": 100,
+            "note": 420,
+        }
+        for c in columns:
+            self.trade_tree.heading(c, text=headers[c])
+            self.trade_tree.column(c, width=widths[c], anchor="center")
+        self.trade_tree.column("note", anchor="w")
+        self.trade_tree.pack(side="left", fill="both", expand=True)
+
+        scroll = ttk.Scrollbar(trade_tab, orient="vertical", command=self.trade_tree.yview)
+        self.trade_tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
 
     def _build_config_form(self, parent: ttk.LabelFrame) -> None:
         fields = [
@@ -407,6 +727,8 @@ class FuturesBotUI:
             ("take_profit_pct", "익절 비율", "0.014"),
             ("max_daily_loss_pct", "일일 최대손실 비율", "0.01"),
             ("loop_seconds", "반복 주기(초)", "30"),
+            ("telegram_bot_token", "텔레그램 봇 토큰", ""),
+            ("telegram_chat_id", "텔레그램 채팅 ID", ""),
         ]
 
         row = 0
@@ -414,20 +736,35 @@ class FuturesBotUI:
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
             var = tk.StringVar(value=value)
             self.vars[key] = var
-            show = "*" if key == "api_secret" else None
+            show = "*" if key in {"api_secret", "telegram_bot_token"} else None
             entry = ttk.Entry(parent, textvariable=var, width=36, show=show)
             entry.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 0))
-            if key in {"api_key", "api_secret"}:
-                entry.bind("<FocusOut>", self._on_api_focus_out)
+            if key in {
+                "api_key",
+                "api_secret",
+                "telegram_bot_token",
+                "telegram_chat_id",
+            }:
+                entry.bind("<FocusOut>", self._on_credential_focus_out)
             row += 1
 
         self.vars["live_mode"] = tk.BooleanVar(value=False)
+        self.vars["telegram_enabled"] = tk.BooleanVar(value=False)
+
         live_check = ttk.Checkbutton(
             parent,
             text="실거래 사용 (체크 해제 시 모의 실행)",
             variable=self.vars["live_mode"],
         )
         live_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        row += 1
+
+        telegram_check = ttk.Checkbutton(
+            parent,
+            text="텔레그램 알림 사용 (진입/청산/오류)",
+            variable=self.vars["telegram_enabled"],
+        )
+        telegram_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         parent.columnconfigure(1, weight=1)
 
@@ -444,7 +781,11 @@ class FuturesBotUI:
         for i, (label, key) in enumerate(fields):
             ttk.Label(parent, text=label).grid(row=i, column=0, sticky="w", pady=4)
             ttk.Label(parent, textvariable=self.status_vars[key]).grid(
-                row=i, column=1, sticky="w", pady=4, padx=(8, 0)
+                row=i,
+                column=1,
+                sticky="w",
+                pady=4,
+                padx=(8, 0),
             )
         parent.columnconfigure(1, weight=1)
 
@@ -452,6 +793,11 @@ class FuturesBotUI:
         values = dotenv_values(self.env_path)
         self.vars["api_key"].set(values.get("BINANCE_API_KEY", ""))
         self.vars["api_secret"].set(values.get("BINANCE_API_SECRET", ""))
+        self.vars["telegram_bot_token"].set(values.get("TELEGRAM_BOT_TOKEN", ""))
+        self.vars["telegram_chat_id"].set(values.get("TELEGRAM_CHAT_ID", ""))
+        self.vars["telegram_enabled"].set(
+            str(values.get("TELEGRAM_ENABLED", "false")).lower() in {"1", "true", "yes"}
+        )
 
     def _save_env(self, show_popup: bool) -> bool:
         api_key = self.vars["api_key"].get().strip()
@@ -460,11 +806,29 @@ class FuturesBotUI:
             if show_popup:
                 messagebox.showerror("API 누락", "API 키와 시크릿을 모두 입력하세요.")
             return False
+
         if not os.path.exists(self.env_path):
             with open(self.env_path, "a", encoding="utf-8"):
                 pass
+
         set_key(self.env_path, "BINANCE_API_KEY", api_key)
         set_key(self.env_path, "BINANCE_API_SECRET", api_secret)
+        set_key(
+            self.env_path,
+            "TELEGRAM_BOT_TOKEN",
+            self.vars["telegram_bot_token"].get().strip(),
+        )
+        set_key(
+            self.env_path,
+            "TELEGRAM_CHAT_ID",
+            self.vars["telegram_chat_id"].get().strip(),
+        )
+        set_key(
+            self.env_path,
+            "TELEGRAM_ENABLED",
+            "true" if self.vars["telegram_enabled"].get() else "false",
+        )
+
         if show_popup:
             messagebox.showinfo("저장 완료", f"{self.env_path} 파일에 저장했습니다.")
         return True
@@ -472,8 +836,7 @@ class FuturesBotUI:
     def save_env_from_form(self) -> None:
         self._save_env(show_popup=True)
 
-    def _on_api_focus_out(self, _event=None) -> None:
-        # Save silently so users only type once.
+    def _on_credential_focus_out(self, _event=None) -> None:
         self._save_env(show_popup=False)
 
     def _build_config(self) -> BotConfig:
@@ -495,6 +858,9 @@ class FuturesBotUI:
             max_daily_loss_pct=float(self.vars["max_daily_loss_pct"].get().strip()),
             loop_seconds=int(self.vars["loop_seconds"].get().strip()),
             dry_run=not self.vars["live_mode"].get(),
+            telegram_enabled=self.vars["telegram_enabled"].get(),
+            telegram_bot_token=self.vars["telegram_bot_token"].get().strip(),
+            telegram_chat_id=self.vars["telegram_chat_id"].get().strip(),
         )
 
     def start_bot(self) -> None:
@@ -519,8 +885,16 @@ class FuturesBotUI:
         if config.loop_seconds < 5:
             messagebox.showerror("반복 주기 오류", "반복 주기는 5초 이상이어야 합니다.")
             return
+        if (
+            config.telegram_enabled
+            and (not config.telegram_bot_token or not config.telegram_chat_id)
+        ):
+            messagebox.showerror(
+                "텔레그램 설정 오류",
+                "텔레그램 알림 사용 시 봇 토큰과 채팅 ID가 필요합니다.",
+            )
+            return
 
-        # Auto-save API keys when starting.
         self._save_env(show_popup=False)
 
         if not config.dry_run:
@@ -542,6 +916,7 @@ class FuturesBotUI:
             config=config,
             log_cb=self._log,
             state_cb=self._update_status,
+            trade_cb=self._push_trade,
             stop_event=self.stop_event,
         )
         self.worker_thread = threading.Thread(target=engine.run, daemon=True)
@@ -564,6 +939,9 @@ class FuturesBotUI:
     def _update_status(self, payload: dict) -> None:
         self.log_queue.put(("status", payload))
 
+    def _push_trade(self, payload: dict) -> None:
+        self.log_queue.put(("trade", payload))
+
     def _log(self, text: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"{timestamp} {text}"
@@ -573,6 +951,22 @@ class FuturesBotUI:
                 f.write(line + "\n")
         except Exception:
             pass
+
+    def _insert_trade_row(self, row: dict) -> None:
+        values = (
+            row.get("time", "-"),
+            row.get("event", "-"),
+            row.get("side", "-"),
+            row.get("amount", "-"),
+            row.get("price", "-"),
+            row.get("status", "-"),
+            row.get("note", "-"),
+        )
+        self.trade_tree.insert("", "end", values=values)
+        items = self.trade_tree.get_children()
+        if len(items) > 500:
+            for item in items[:-500]:
+                self.trade_tree.delete(item)
 
     def _drain_log_queue(self) -> None:
         while not self.log_queue.empty():
@@ -586,6 +980,8 @@ class FuturesBotUI:
                 for key, value in payload.items():
                     if key in self.status_vars:
                         self.status_vars[key].set(value)
+            elif kind == "trade":
+                self._insert_trade_row(payload)
         self.root.after(250, self._drain_log_queue)
 
 
