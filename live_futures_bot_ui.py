@@ -180,6 +180,9 @@ class FuturesBotEngine:
             long_val = row["long"]
             chart_points.append(
                 {
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
                     "close": float(row["close"]),
                     "short": None if pd.isna(short_val) else float(short_val),
                     "long": None if pd.isna(long_val) else float(long_val),
@@ -1046,7 +1049,7 @@ class FuturesBotUI:
 
         values: list[float] = []
         for p in points:
-            for key in ("close", "short", "long"):
+            for key in ("high", "low", "short", "long"):
                 v = p.get(key)
                 if v is not None:
                     values.append(float(v))
@@ -1060,8 +1063,8 @@ class FuturesBotUI:
 
         def x_of(i: int, n: int) -> float:
             if n <= 1:
-                return left
-            return left + (i / (n - 1)) * plot_w
+                return left + plot_w / 2
+            return left + (i / n) * plot_w + (plot_w / n) / 2
 
         def y_of(v: float) -> float:
             ratio = (v - v_min) / (v_max - v_min)
@@ -1071,6 +1074,47 @@ class FuturesBotUI:
         for g in range(5):
             gy = top + (plot_h * g / 4)
             canvas.create_line(left, gy, left + plot_w, gy, fill="#1E293B")
+
+        # Draw candles first (wick + body).
+        n = len(points)
+        candle_slot = plot_w / max(n, 1)
+        candle_w = max(min(candle_slot * 0.68, 18), 3)
+        up_color = "#22C55E"
+        down_color = "#EF4444"
+
+        for i, p in enumerate(points):
+            o = p.get("open")
+            h = p.get("high")
+            l = p.get("low")
+            c = p.get("close")
+            if None in (o, h, l, c):
+                continue
+
+            o = float(o)
+            h = float(h)
+            l = float(l)
+            c = float(c)
+            x = x_of(i, n)
+            wick_top = y_of(h)
+            wick_bottom = y_of(l)
+            body_top = y_of(max(o, c))
+            body_bottom = y_of(min(o, c))
+            color = up_color if c >= o else down_color
+
+            # Wick
+            canvas.create_line(x, wick_top, x, wick_bottom, fill=color, width=1)
+
+            # Body (minimum 1px height for visibility)
+            if abs(body_bottom - body_top) < 1:
+                body_bottom = body_top + 1
+            canvas.create_rectangle(
+                x - candle_w / 2,
+                body_top,
+                x + candle_w / 2,
+                body_bottom,
+                fill=color,
+                outline=color,
+            )
 
         def draw_series(key: str, color: str, width_px: int = 2) -> None:
             line_points: list[tuple[float, float]] = []
@@ -1088,8 +1132,7 @@ class FuturesBotUI:
                 flat = [coord for pt in line_points for coord in pt]
                 canvas.create_line(*flat, fill=color, width=width_px, smooth=True)
 
-        # close/short/long lines
-        draw_series("close", "#60A5FA", 2)
+        # MA lines
         draw_series("short", "#22C55E", 2)
         draw_series("long", "#F97316", 2)
 
@@ -1110,9 +1153,10 @@ class FuturesBotUI:
         )
 
         legend_y = top + plot_h + 16
-        canvas.create_text(left + 4, legend_y, text="● 종가", fill="#60A5FA", anchor="w")
-        canvas.create_text(left + 74, legend_y, text="● 단기 MA", fill="#22C55E", anchor="w")
-        canvas.create_text(left + 168, legend_y, text="● 장기 MA", fill="#F97316", anchor="w")
+        canvas.create_text(left + 4, legend_y, text="■ 양봉", fill=up_color, anchor="w")
+        canvas.create_text(left + 58, legend_y, text="■ 음봉", fill=down_color, anchor="w")
+        canvas.create_text(left + 112, legend_y, text="● 단기 MA", fill="#22C55E", anchor="w")
+        canvas.create_text(left + 206, legend_y, text="● 장기 MA", fill="#F97316", anchor="w")
 
     def _drain_log_queue(self) -> None:
         while not self.log_queue.empty():
