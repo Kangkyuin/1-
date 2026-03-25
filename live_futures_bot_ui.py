@@ -785,19 +785,30 @@ class FuturesBotUI:
 
     def _setup_background_image(self) -> None:
         """
-        Loads optional background image from assets/ui_bg.png.
-        Tkinter PhotoImage supports PNG/GIF/PPM/PGM.
+        Loads optional background image from assets.
+        Preferred order: ui_bg.png -> ui_bg.jpg -> ui_bg.jpeg -> ui_bg.gif
         """
-        bg_path = os.path.join(self.base_dir, "assets", "ui_bg.png")
-        if not os.path.exists(bg_path):
+        candidate_names = ("ui_bg.png", "ui_bg.jpg", "ui_bg.jpeg", "ui_bg.gif")
+        bg_path = None
+        for name in candidate_names:
+            path = os.path.join(self.base_dir, "assets", name)
+            if os.path.exists(path):
+                bg_path = path
+                break
+        if bg_path is None:
             return
+
         try:
             self.bg_image = tk.PhotoImage(file=bg_path)
             self.bg_label = tk.Label(self.root, image=self.bg_image, bd=0)
             self.bg_label.place(x=0, y=0, relwidth=1, relheight=1)
             self.bg_label.lower()
+            self._log(f"[UI] 배경 이미지 적용: {os.path.basename(bg_path)}")
         except Exception as exc:
-            self._log(f"[UI] 배경 이미지 로드 실패: {exc}")
+            self._log(
+                "[UI] 배경 이미지 로드 실패: "
+                f"{exc}. 파일 형식을 확인하세요 (png/jpg/jpeg/gif)."
+            )
 
     def _build_config_form(self, parent: ttk.LabelFrame) -> None:
         fields = [

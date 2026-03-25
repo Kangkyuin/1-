@@ -131,20 +131,25 @@ pyinstaller --noconfirm --windowed --name BinanceFuturesBot live_futures_bot_ui.
 
 ## 7-1) UI 배경 이미지 넣기 (선택)
 
-배경 이미지를 넣고 싶으면 아래 위치에 PNG 파일을 두세요:
+배경 이미지를 넣고 싶으면 아래 위치에 파일을 두세요:
 
 ```text
 assets/ui_bg.png
 ```
 
+지원 형식:
+- `ui_bg.png` (기본)
+- `ui_bg.jpg` 또는 `ui_bg.jpeg` (PNG 실패 시 자동 폴백)
+
 규칙:
-- 파일명은 정확히 `ui_bg.png`
-- PNG 형식(투명 배경 가능)
+- 파일명은 위 이름 중 하나를 사용
 - 앱은 자동으로 창 크기에 맞춰 배경 이미지를 늘려서 표시합니다.
-- 배경이 없으면 기본 다크 테마로 동작합니다.
+- 배경 파일이 없거나 로드 실패하면 기본 다크 테마로 동작합니다.
 
 EXE에서도 동일하게 사용하려면:
-- `dist\BinanceFuturesBot\assets\ui_bg.png` 경로에 파일을 같이 두세요.
+- `dist\BinanceFuturesBot\assets\ui_bg.png` 또는
+- `dist\BinanceFuturesBot\assets\ui_bg.jpg`
+경로에 파일을 같이 두세요.
 
 ---
 
