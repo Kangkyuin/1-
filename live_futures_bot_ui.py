@@ -529,6 +529,7 @@ class FuturesBotUI:
         self.margin_mode_var = tk.StringVar(value="isolated")
         self.bg_image: Optional[tk.PhotoImage] = None
         self.bg_label: Optional[tk.Label] = None
+        self.bg_pil_image = None
 
         self._build_ui()
         self._load_env_to_form()
@@ -800,15 +801,34 @@ class FuturesBotUI:
 
         try:
             self.bg_image = tk.PhotoImage(file=bg_path)
-            self.bg_label = tk.Label(self.root, image=self.bg_image, bd=0)
-            self.bg_label.place(x=0, y=0, relwidth=1, relheight=1)
-            self.bg_label.lower()
-            self._log(f"[UI] 배경 이미지 적용: {os.path.basename(bg_path)}")
-        except Exception as exc:
-            self._log(
-                "[UI] 배경 이미지 로드 실패: "
-                f"{exc}. 파일 형식을 확인하세요 (png/jpg/jpeg/gif)."
-            )
+        except Exception as tk_exc:
+            # Tkinter 기본 로더는 환경에 따라 jpg/jpeg를 읽지 못할 수 있어 PIL로 재시도.
+            try:
+                from PIL import Image, ImageTk
+
+                self.bg_pil_image = Image.open(bg_path)
+                self.bg_image = ImageTk.PhotoImage(self.bg_pil_image)
+            except ImportError:
+                self._log(
+                    "[UI] JPG/JPEG 배경 이미지를 읽으려면 Pillow가 필요합니다. "
+                    "설치: python -m pip install pillow"
+                )
+                self._log(
+                    f"[UI] 배경 이미지 로드 실패: {tk_exc}. "
+                    "또는 PNG/GIF로 변환해서 사용하세요."
+                )
+                return
+            except Exception as pil_exc:
+                self._log(
+                    "[UI] 배경 이미지 로드 실패: "
+                    f"{pil_exc}. 파일 형식을 확인하세요 (png/jpg/jpeg/gif)."
+                )
+                return
+
+        self.bg_label = tk.Label(self.root, image=self.bg_image, bd=0)
+        self.bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+        self.bg_label.lower()
+        self._log(f"[UI] 배경 이미지 적용: {os.path.basename(bg_path)}")
 
     def _build_config_form(self, parent: ttk.LabelFrame) -> None:
         fields = [

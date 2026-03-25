@@ -140,11 +140,14 @@ assets/ui_bg.png
 지원 형식:
 - `ui_bg.png` (기본)
 - `ui_bg.jpg` 또는 `ui_bg.jpeg` (PNG 실패 시 자동 폴백)
+- `ui_bg.gif`
 
 규칙:
 - 파일명은 위 이름 중 하나를 사용
 - 앱은 자동으로 창 크기에 맞춰 배경 이미지를 늘려서 표시합니다.
 - 배경 파일이 없거나 로드 실패하면 기본 다크 테마로 동작합니다.
+- JPG/JPEG가 로드되지 않으면 Pillow 설치:
+  - `python -m pip install pillow`
 
 EXE에서도 동일하게 사용하려면:
 - `dist\BinanceFuturesBot\assets\ui_bg.png` 또는
