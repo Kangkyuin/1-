@@ -528,7 +528,9 @@ class FuturesBotUI:
         self.last_chart_points: list[dict] = []
         self.margin_mode_var = tk.StringVar(value="isolated")
         self.bg_image: Optional[tk.PhotoImage] = None
+        self.bg_pil_image = None
         self.bg_label: Optional[tk.Label] = None
+        self.chart_bg_image: Optional[tk.PhotoImage] = None
         self.bg_pil_image = None
 
         self._build_ui()
@@ -829,6 +831,32 @@ class FuturesBotUI:
         self.bg_label.place(x=0, y=0, relwidth=1, relheight=1)
         self.bg_label.lower()
         self._log(f"[UI] 배경 이미지 적용: {os.path.basename(bg_path)}")
+
+    def _draw_chart_background(self, canvas: tk.Canvas, width: int, height: int) -> bool:
+        """
+        Draw a visible background image specifically for the chart area.
+        Returns True when background image was drawn.
+        """
+        # Prefer PIL path so we can resize smoothly and darken for readability.
+        if self.bg_pil_image is not None:
+            try:
+                from PIL import Image, ImageTk
+
+                resized = self.bg_pil_image.resize((width, height), Image.Resampling.LANCZOS)
+                dark = Image.new("RGB", (width, height), "#0B1220")
+                blended = Image.blend(resized.convert("RGB"), dark, 0.45)
+                self.chart_bg_image = ImageTk.PhotoImage(blended)
+                canvas.create_image(0, 0, image=self.chart_bg_image, anchor="nw")
+                return True
+            except Exception:
+                pass
+
+        # Fallback to raw Tk image (may not fit perfectly, but still visible).
+        if self.bg_image is not None:
+            canvas.create_image(0, 0, image=self.bg_image, anchor="nw")
+            return True
+
+        return False
 
     def _build_config_form(self, parent: ttk.LabelFrame) -> None:
         fields = [
@@ -1147,6 +1175,10 @@ class FuturesBotUI:
         if width < 120 or height < 120:
             return
 
+        bg_rendered = self._draw_chart_background(canvas, width, height)
+        if not bg_rendered:
+            canvas.create_rectangle(0, 0, width, height, fill="#0B1220", outline="")
+
         # Plot paddings
         left = 56
         right = 16
@@ -1191,10 +1223,17 @@ class FuturesBotUI:
         y_rsi0 = y_vol1 + gap
         y_rsi1 = top + plot_h
 
-        # Panel backgrounds
-        canvas.create_rectangle(left, y_price0, left + plot_w, y_price1, outline="#1E293B", fill="#0B1220")
-        canvas.create_rectangle(left, y_vol0, left + plot_w, y_vol1, outline="#1E293B", fill="#0B1220")
-        canvas.create_rectangle(left, y_rsi0, left + plot_w, y_rsi1, outline="#1E293B", fill="#0B1220")
+        # Panel frames (transparent fill when background image is rendered).
+        panel_fill = "" if bg_rendered else "#0B1220"
+        canvas.create_rectangle(
+            left, y_price0, left + plot_w, y_price1, outline="#1E293B", fill=panel_fill
+        )
+        canvas.create_rectangle(
+            left, y_vol0, left + plot_w, y_vol1, outline="#1E293B", fill=panel_fill
+        )
+        canvas.create_rectangle(
+            left, y_rsi0, left + plot_w, y_rsi1, outline="#1E293B", fill=panel_fill
+        )
 
         n = len(points)
 
