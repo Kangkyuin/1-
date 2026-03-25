@@ -927,12 +927,14 @@ class FuturesBotUI:
             "TELEGRAM_ENABLED",
             "true" if self.vars["telegram_enabled"].get() else "false",
         )
-        set_key(
-            self.env_path,
-            "MARGIN_MODE",
-            self.vars["margin_mode"].get().strip().lower(),
-        )
-        set_key(self.env_path, "BINANCE_MARGIN_MODE", self.vars["margin_mode"].get().strip())
+        margin_mode = "isolated"
+        margin_var = self.vars.get("margin_mode")
+        if isinstance(margin_var, tk.StringVar):
+            value = margin_var.get().strip().lower()
+            if value in {"isolated", "cross"}:
+                margin_mode = value
+        set_key(self.env_path, "MARGIN_MODE", margin_mode)
+        set_key(self.env_path, "BINANCE_MARGIN_MODE", margin_mode)
 
         if show_popup:
             messagebox.showinfo("저장 완료", f"{self.env_path} 파일에 저장했습니다.")
@@ -945,7 +947,19 @@ class FuturesBotUI:
         self._save_env(show_popup=False)
 
     def _select_margin_mode(self, mode: str) -> None:
-        self.vars["margin_mode"].set(mode)
+        # Defensive init: some stale local builds can call this before variable wiring.
+        margin_var = self.vars.get("margin_mode")
+        if not isinstance(margin_var, tk.StringVar):
+            margin_var = tk.StringVar(value="isolated")
+            self.vars["margin_mode"] = margin_var
+
+        mode = (mode or "isolated").strip().lower()
+        if mode not in {"isolated", "cross"}:
+            mode = "isolated"
+        margin_var.set(mode)
+
+        if not hasattr(self, "margin_iso_btn") or not hasattr(self, "margin_cross_btn"):
+            return
         if mode == "isolated":
             self.margin_iso_btn.configure(style="ModeOn.TButton")
             self.margin_cross_btn.configure(style="ModeOff.TButton")
@@ -957,6 +971,12 @@ class FuturesBotUI:
         symbol = self.vars["symbol"].get().strip()
         if ":" not in symbol:
             symbol = f"{symbol}:USDT"
+        margin_mode = "isolated"
+        margin_var = self.vars.get("margin_mode")
+        if isinstance(margin_var, tk.StringVar):
+            value = margin_var.get().strip().lower()
+            if value in {"isolated", "cross"}:
+                margin_mode = value
         return BotConfig(
             api_key=self.vars["api_key"].get().strip(),
             api_secret=self.vars["api_secret"].get().strip(),
@@ -965,7 +985,7 @@ class FuturesBotUI:
             short_ma=int(self.vars["short_ma"].get().strip()),
             long_ma=int(self.vars["long_ma"].get().strip()),
             leverage=int(self.vars["leverage"].get().strip()),
-            margin_mode=self.vars["margin_mode"].get().strip(),
+            margin_mode=margin_mode,
             risk_per_trade=float(self.vars["risk_per_trade"].get().strip()),
             stop_loss_pct=float(self.vars["stop_loss_pct"].get().strip()),
             take_profit_pct=float(self.vars["take_profit_pct"].get().strip()),
