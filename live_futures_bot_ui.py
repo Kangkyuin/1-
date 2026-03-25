@@ -442,6 +442,10 @@ class FuturesBotEngine:
             f"[봇 시작]\n{self.config.symbol}\n모드: {'모의 실행' if self.config.dry_run else '실거래'}"
         )
 
+        # Separate fast ticker loop for smoother chart movement without affecting trade loop timing.
+        ticker_thread = threading.Thread(target=self._run_ticker_loop, daemon=True)
+        ticker_thread.start()
+
         while not self.stop_event.is_set():
             try:
                 if not self.risk_guard():
@@ -508,6 +512,21 @@ class FuturesBotEngine:
 
         self.log("[시스템] 엔진 종료.")
         self._notify(f"[봇 종료]\n{self.config.symbol}")
+
+    def _run_ticker_loop(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                if self.exchange is None:
+                    time.sleep(1)
+                    continue
+                ticker = self.exchange.fetch_ticker(self.config.symbol)
+                last = ticker.get("last")
+                if last is not None:
+                    self.state_cb({"live_price": float(last)})
+            except Exception:
+                # Ticker noise should not interrupt the main strategy loop.
+                pass
+            time.sleep(1)
 
 
 class FuturesBotUI:
