@@ -161,6 +161,11 @@ class FuturesBotEngine:
         )
         df["short"] = df["close"].rolling(self.config.short_ma).mean()
         df["long"] = df["close"].rolling(self.config.long_ma).mean()
+        delta = df["close"].diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = gain / loss.replace(0, pd.NA)
+        df["rsi"] = 100 - (100 / (1 + rs))
 
         prev_diff = df["short"].iloc[-3] - df["long"].iloc[-3]
         curr_diff = df["short"].iloc[-2] - df["long"].iloc[-2]
@@ -178,14 +183,17 @@ class FuturesBotEngine:
         for _, row in chart_df.iterrows():
             short_val = row["short"]
             long_val = row["long"]
+            rsi_val = row["rsi"]
             chart_points.append(
                 {
                     "open": float(row["open"]),
                     "high": float(row["high"]),
                     "low": float(row["low"]),
                     "close": float(row["close"]),
+                    "volume": float(row["volume"]),
                     "short": None if pd.isna(short_val) else float(short_val),
                     "long": None if pd.isna(long_val) else float(long_val),
+                    "rsi": None if pd.isna(rsi_val) else float(rsi_val),
                 }
             )
 
