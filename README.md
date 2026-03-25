@@ -1,14 +1,20 @@
-# Binance Futures CSV Signal Bot
+# Binance Futures Live Bot (UI + EXE)
 
-외부 CSV 시그널을 기존 MA 크로스 전략에 필터로 결합하는 초보자용 예제입니다.
+실제 바이낸스 USDT-M 선물 계정에서 동작 가능한 파이썬 GUI 봇 예제입니다.
+
+> 경고: 실거래는 손실 위험이 큽니다. 반드시 소액, 낮은 레버리지, 충분한 모의검증 후 사용하세요.
+
+---
 
 ## 1) 파일 구성
 
-- `bot_futures_csv.py`: 실행할 선물 봇 코드
-- `external_signals.example.csv`: 외부 시그널 CSV 예시 포맷
-- `.env` (직접 생성): 바이낸스 테스트넷 API 키
+- `live_futures_bot_ui.py` : GUI 실행 앱 (실거래/드라이런 전환 가능)
+- `.env` (직접 생성) : API 키 저장
+- `logs/` : 실행 중 로그 자동 저장
 
-## 2) 준비 (Windows PowerShell)
+---
+
+## 2) 설치 (Windows PowerShell)
 
 ```powershell
 py -m venv .venv
@@ -17,50 +23,79 @@ pip install --upgrade pip
 pip install ccxt pandas python-dotenv
 ```
 
+---
+
 ## 3) .env 만들기
 
-프로젝트 루트에 `.env` 파일을 만들고 아래처럼 넣으세요.
+프로젝트 루트에 `.env` 파일 생성:
 
 ```env
-BINANCE_API_KEY=여기에_테스트넷_KEY
-BINANCE_API_SECRET=여기에_테스트넷_SECRET
+BINANCE_API_KEY=여기에_실거래_API_KEY
+BINANCE_API_SECRET=여기에_실거래_SECRET
 ```
 
-## 4) 외부 CSV 파일 만들기
+권장:
+- API 권한은 선물 주문에 필요한 최소 권한만
+- 출금 권한은 OFF
+- IP 화이트리스트 사용
 
-`external_signals.example.csv`를 `external_signals.csv`로 복사해서 사용하세요.
+---
+
+## 4) 앱 실행
 
 ```powershell
-Copy-Item external_signals.example.csv external_signals.csv
+python .\live_futures_bot_ui.py
 ```
 
-CSV 규칙:
-- 컬럼은 반드시 `timestamp,signal`
-- timestamp는 UTC ISO 형식 권장 (`2026-03-25T12:30:00Z`)
-- signal 값은 `LONG`, `SHORT`, `NEUTRAL` 중 하나
+실행 후 UI에서:
+1. API 연결 확인
+2. 심볼/타임프레임/레버리지/리스크 설정
+3. DRY RUN 체크 상태로 먼저 시작
+4. 로그 확인 후 LIVE TRADING으로 전환
 
-## 5) 실행
+---
+
+## 5) 매매 로직 (기본)
+
+- 전략: 이동평균 교차
+  - LONG: 단기MA가 장기MA 상향 돌파
+  - SHORT: 단기MA가 장기MA 하향 돌파
+- 포지션이 없을 때만 신규 진입
+- 진입 시 동시에 보호주문:
+  - 손절: `STOP_MARKET` + `reduceOnly`
+  - 익절: `TAKE_PROFIT_MARKET` + `reduceOnly`
+- 일일 손실 제한 도달 시 자동 중지
+
+---
+
+## 6) EXE 빌드
+
+### 6-1. PyInstaller 설치
 
 ```powershell
-python .\bot_futures_csv.py
+pip install pyinstaller
 ```
 
-## 6) 동작 방식
+### 6-2. 빌드 실행
 
-1. 봇이 MA 크로스 신호를 계산 (`LONG`, `SHORT`, `HOLD`)
-2. `external_signals.csv`의 최신 시그널을 읽음
-3. 두 신호를 결합해 최종 진입 여부 결정
+```powershell
+pyinstaller --noconfirm --windowed --name BinanceFuturesBot live_futures_bot_ui.py
+```
 
-기본값(`CSV_STRICT_FILTER = True`)일 때:
-- MA가 `LONG`이고 CSV도 `LONG`일 때만 진입
-- MA가 `SHORT`이고 CSV도 `SHORT`일 때만 진입
-- 조건 불일치면 `HOLD`
+### 6-3. 실행 파일 위치
 
-## 7) 초보 안전 체크
+- `dist\BinanceFuturesBot\BinanceFuturesBot.exe`
 
-- 기본 `DRY_RUN = True`로 먼저 테스트
-- 반드시 바이낸스 선물 테스트넷에서 검증
-- 실제 주문 전:
-  - 포지션/주문 로그 확인
-  - 손절/익절 주문 생성 확인
-  - 일일 손실 제한 동작 확인
+주의:
+- exe 옆(또는 실행 작업 폴더)에 `.env` 파일이 있어야 API 키를 읽습니다.
+- 처음에는 반드시 DRY RUN으로 검증하세요.
+
+---
+
+## 7) 운영 체크리스트
+
+- [ ] 레버리지 2~3 이하로 시작
+- [ ] 거래당 리스크 0.2%~0.5%
+- [ ] 일일 손실 제한 1% 내외
+- [ ] 최소 1~2주 드라이런/소액 실거래 로그 점검
+- [ ] 에러 로그 확인 후 자동 재시작(운영 시)
