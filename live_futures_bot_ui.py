@@ -162,18 +162,21 @@ class FuturesBotEngine:
         rs = gain / loss.replace(0, pd.NA)
         df["rsi"] = 100 - (100 / (1 + rs))
 
-        prev_diff = df["short"].iloc[-3] - df["long"].iloc[-3]
-        curr_diff = df["short"].iloc[-2] - df["long"].iloc[-2]
-        close_price = float(df["close"].iloc[-2])
+        # Signal uses closed candles only.
+        closed_df = df.iloc[:-1].copy()
+        if len(closed_df) < 2:
+            return "HOLD", float(df["close"].iloc[-1]), []
+        prev_diff = closed_df["short"].iloc[-2] - closed_df["long"].iloc[-2]
+        curr_diff = closed_df["short"].iloc[-1] - closed_df["long"].iloc[-1]
+        close_price = float(closed_df["close"].iloc[-1])
 
         self.log(
             f"[MA] close={close_price:.2f} prev_diff={prev_diff:.4f} "
             f"curr_diff={curr_diff:.4f}"
         )
 
-        # Prepare chart data from closed candles only (exclude last in-progress candle).
-        closed_df = df.iloc[:-1].copy()
-        chart_df = closed_df.tail(80)
+        # Chart includes the in-progress candle so movement appears in near real-time.
+        chart_df = df.tail(80)
         chart_points: list[dict] = []
         for _, row in chart_df.iterrows():
             short_val = row["short"]
@@ -199,6 +202,16 @@ class FuturesBotEngine:
         if prev_diff >= 0 and curr_diff < 0:
             return "SHORT", close_price, chart_points
         return "HOLD", close_price, chart_points
+
+    def get_live_price(self, fallback_price: float) -> float:
+        try:
+            ticker = self.exchange.fetch_ticker(self.config.symbol)
+            last = ticker.get("last")
+            if last is not None:
+                return float(last)
+        except Exception:
+            pass
+        return float(fallback_price)
 
     def get_position(self) -> Optional[dict]:
         try:
@@ -434,7 +447,8 @@ class FuturesBotEngine:
                 if not self.risk_guard():
                     break
 
-                signal, price, chart_points = self.get_ma_signal()
+                signal, closed_price, chart_points = self.get_ma_signal()
+                live_price = self.get_live_price(closed_price)
                 position = self.get_position()
                 self.sync_recent_trades()
 
@@ -460,7 +474,7 @@ class FuturesBotEngine:
 
                 self.state_cb(
                     {
-                        "price": f"{price:.2f}",
+                        "price": f"{live_price:.2f}",
                         "position": (
                             "없음"
                             if position is None
@@ -468,12 +482,13 @@ class FuturesBotEngine:
                         ),
                         "signal": self._signal_ko(signal),
                         "chart": chart_points,
+                        "live_price": live_price,
                     }
                 )
 
                 self.log(f"[신호] 최종={signal} 포지션={position}")
                 if position is None and signal in {"LONG", "SHORT"}:
-                    self.place_entry_with_brackets(signal, price)
+                    self.place_entry_with_brackets(signal, live_price)
 
             except Exception as exc:
                 text = str(exc)
@@ -526,6 +541,7 @@ class FuturesBotUI:
             "mode": tk.StringVar(value="대기"),
         }
         self.last_chart_points: list[dict] = []
+        self.last_live_price: Optional[float] = None
         self.margin_mode_var = tk.StringVar(value="isolated")
         self.bg_image: Optional[tk.PhotoImage] = None
         self.bg_pil_image = None
@@ -1379,6 +1395,31 @@ class FuturesBotUI:
             font=("Segoe UI", 10, "bold"),
         )
 
+        # Draw live price marker (ticker-based) so users see movement even within same candle.
+        if self.last_live_price is not None:
+            try:
+                live_val = float(self.last_live_price)
+                if p_min <= live_val <= p_max:
+                    y_live = y_price(live_val)
+                    canvas.create_line(
+                        left,
+                        y_live,
+                        left + plot_w,
+                        y_live,
+                        fill="#38BDF8",
+                        dash=(5, 3),
+                    )
+                    canvas.create_text(
+                        left + plot_w - 6,
+                        y_live - 2,
+                        text=f"LIVE {live_val:.2f}",
+                        fill="#38BDF8",
+                        anchor="se",
+                        font=("Segoe UI", 9, "bold"),
+                    )
+            except Exception:
+                pass
+
         canvas.create_text(left + 4, y_price1 + 10, text="거래량", fill="#94A3B8", anchor="nw")
         canvas.create_text(left + 4, y_rsi0 + 2, text="RSI(14)", fill="#A78BFA", anchor="nw")
 
@@ -1399,9 +1440,12 @@ class FuturesBotUI:
                 self.log_box.configure(state="disabled")
             elif kind == "status":
                 chart_data = payload.get("chart")
+                live_price = payload.get("live_price")
                 for key, value in payload.items():
                     if key in self.status_vars:
                         self.status_vars[key].set(value)
+                if isinstance(live_price, (int, float)):
+                    self.last_live_price = float(live_price)
                 if isinstance(chart_data, list):
                     self.last_chart_points = chart_data
                     self._draw_chart(chart_data)
