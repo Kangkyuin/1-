@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Optional
 
 import ccxt
@@ -16,6 +17,11 @@ import tkinter as tk
 from dotenv import dotenv_values, set_key
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+
+try:
+    import joblib
+except Exception:
+    joblib = None
 
 
 @dataclass
@@ -39,6 +45,9 @@ class BotConfig:
     gpt_filter_enabled: bool
     openai_api_key: str
     openai_model: str
+    ml_filter_enabled: bool
+    ml_model_path: str
+    ml_min_confidence: float
 
 
 class DiscordNotifier:
@@ -122,6 +131,147 @@ class GptSignalFilter:
             return "HOLD", f"error:{exc}"
 
 
+class MlSignalFilter:
+    def __init__(self, enabled: bool, model_path: str, min_confidence: float):
+        self.enabled = enabled and bool((model_path or "").strip())
+        self.model_path = (model_path or "").strip()
+        self.min_confidence = max(0.0, min(1.0, float(min_confidence or 0.0)))
+        self.model = None
+        self.features: list[str] = []
+        self.error_reason = "disabled"
+        self.ready = False
+        self._load_model()
+
+    def _load_model(self) -> None:
+        if not self.enabled:
+            self.error_reason = "disabled"
+            return
+        if joblib is None:
+            self.error_reason = "joblib_missing"
+            return
+        model_file = Path(self.model_path)
+        if not model_file.exists():
+            self.error_reason = "model_not_found"
+            return
+        try:
+            payload = joblib.load(model_file)
+            if isinstance(payload, dict) and "model" in payload:
+                self.model = payload["model"]
+                self.features = list(payload.get("features") or [])
+            else:
+                self.model = payload
+                self.features = []
+            if not self.features:
+                self.features = [
+                    "ret_1",
+                    "ret_3",
+                    "ret_6",
+                    "ma_gap_pct",
+                    "ema_gap_pct",
+                    "rsi_14",
+                    "atr_pct",
+                    "vol_z_20",
+                    "body_pct",
+                    "upper_wick_pct",
+                    "lower_wick_pct",
+                ]
+            self.ready = True
+            self.error_reason = "ok"
+        except Exception as exc:
+            self.error_reason = f"load_error:{exc}"
+            self.ready = False
+
+    @staticmethod
+    def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
+        delta = series.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(period).mean()
+        avg_loss = loss.rolling(period).mean()
+        rs = avg_gain / avg_loss.replace(0, pd.NA)
+        return 100 - (100 / (1 + rs))
+
+    def _build_features(self, chart_points: list[dict]) -> pd.DataFrame:
+        df = pd.DataFrame(chart_points).copy()
+        for col in ("open", "high", "low", "close", "volume"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        feat = df[["open", "high", "low", "close", "volume"]].copy()
+        feat["ret_1"] = feat["close"].pct_change(1)
+        feat["ret_3"] = feat["close"].pct_change(3)
+        feat["ret_6"] = feat["close"].pct_change(6)
+        feat["ma_7"] = feat["close"].rolling(7).mean()
+        feat["ma_25"] = feat["close"].rolling(25).mean()
+        feat["ma_gap_pct"] = (feat["ma_7"] - feat["ma_25"]) / feat["close"]
+        feat["ema_9"] = feat["close"].ewm(span=9, adjust=False).mean()
+        feat["ema_21"] = feat["close"].ewm(span=21, adjust=False).mean()
+        feat["ema_gap_pct"] = (feat["ema_9"] - feat["ema_21"]) / feat["close"]
+        feat["rsi_14"] = self._rsi(feat["close"], 14)
+
+        tr = pd.concat(
+            [
+                feat["high"] - feat["low"],
+                (feat["high"] - feat["close"].shift(1)).abs(),
+                (feat["low"] - feat["close"].shift(1)).abs(),
+            ],
+            axis=1,
+        )
+        feat["atr_14"] = tr.max(axis=1).rolling(14).mean()
+        feat["atr_pct"] = feat["atr_14"] / feat["close"]
+
+        vol_mean_20 = feat["volume"].rolling(20).mean()
+        vol_std_20 = feat["volume"].rolling(20).std()
+        feat["vol_z_20"] = (feat["volume"] - vol_mean_20) / vol_std_20.replace(0, pd.NA)
+
+        feat["body_pct"] = (feat["close"] - feat["open"]) / feat["open"]
+        feat["upper_wick_pct"] = (
+            feat["high"] - feat[["open", "close"]].max(axis=1)
+        ) / feat["open"]
+        feat["lower_wick_pct"] = (
+            feat[["open", "close"]].min(axis=1) - feat["low"]
+        ) / feat["open"]
+        return feat
+
+    def request_signal(self, chart_points: list[dict]) -> tuple[str, str]:
+        if not self.enabled:
+            return "HOLD", "disabled"
+        if not self.ready or self.model is None:
+            return "HOLD", self.error_reason
+        if len(chart_points) < 30:
+            return "HOLD", "insufficient_data"
+
+        try:
+            feat = self._build_features(chart_points).dropna().reset_index(drop=True)
+            if feat.empty:
+                return "HOLD", "insufficient_data"
+            missing = [c for c in self.features if c not in feat.columns]
+            if missing:
+                return "HOLD", f"missing_features:{','.join(missing[:3])}"
+
+            x = feat[self.features].tail(1)
+            pred = int(self.model.predict(x)[0])
+            confidence = 1.0
+
+            if hasattr(self.model, "predict_proba"):
+                probs = self.model.predict_proba(x)[0]
+                classes = [int(v) for v in getattr(self.model, "classes_", [])]
+                if pred in classes:
+                    idx = classes.index(pred)
+                    confidence = float(probs[idx])
+                elif len(probs) > 0:
+                    confidence = float(max(probs))
+
+            if confidence < self.min_confidence:
+                return "HOLD", f"low_confidence:{confidence:.2f}"
+            if pred == 1:
+                return "LONG", f"ok:{confidence:.2f}"
+            if pred == -1:
+                return "SHORT", f"ok:{confidence:.2f}"
+            return "HOLD", f"neutral:{confidence:.2f}"
+        except Exception as exc:
+            return "HOLD", f"error:{exc}"
+
+
 class FuturesBotEngine:
     def __init__(
         self,
@@ -144,6 +294,11 @@ class FuturesBotEngine:
             enabled=config.gpt_filter_enabled,
             api_key=config.openai_api_key,
             model=config.openai_model,
+        )
+        self.ml_filter = MlSignalFilter(
+            enabled=config.ml_filter_enabled,
+            model_path=config.ml_model_path,
+            min_confidence=config.ml_min_confidence,
         )
         self.exchange = None
         self.initial_equity: Optional[float] = None
@@ -191,16 +346,28 @@ class FuturesBotEngine:
             "Return only one token: LONG, SHORT, or HOLD."
         )
 
-    def _combine_signals(self, ma_signal: str, gpt_signal: str) -> tuple[str, str]:
-        if not self.config.gpt_filter_enabled:
-            return ma_signal, "gpt_off"
+    def _combine_signals(
+        self,
+        ma_signal: str,
+        gpt_signal: str,
+        ml_signal: str,
+    ) -> tuple[str, str]:
         if ma_signal not in {"LONG", "SHORT"}:
-            return "HOLD", "ma_hold"
-        if gpt_signal not in {"LONG", "SHORT", "HOLD"}:
-            return "HOLD", "gpt_invalid"
-        if gpt_signal == ma_signal:
-            return ma_signal, "agree"
-        return "HOLD", "disagree_or_hold"
+            return "HOLD", "ma_hold_or_invalid"
+
+        checks: list[str] = []
+        if self.config.gpt_filter_enabled:
+            if gpt_signal != ma_signal:
+                return "HOLD", "blocked_by_gpt"
+            checks.append("gpt")
+        if self.config.ml_filter_enabled:
+            if ml_signal != ma_signal:
+                return "HOLD", "blocked_by_ml"
+            checks.append("ml")
+
+        if not checks:
+            return ma_signal, "ma_only"
+        return ma_signal, "agree_" + "_".join(checks)
 
     def setup_exchange(self) -> None:
         self.exchange = ccxt.binanceusdm(
@@ -242,7 +409,7 @@ class FuturesBotEngine:
         candles = self.exchange.fetch_ohlcv(
             self.config.symbol,
             timeframe=self.config.timeframe,
-            limit=self.config.long_ma + 10,
+            limit=max(self.config.long_ma + 10, 120),
         )
         df = pd.DataFrame(
             candles,
@@ -532,6 +699,14 @@ class FuturesBotEngine:
         self.log("[시스템] 엔진 시작 중...")
         self.setup_exchange()
         self.log("[시스템] 엔진 시작 완료.")
+        if self.config.ml_filter_enabled:
+            if self.ml_filter.ready:
+                self.log(
+                    f"[ML] 모델 로드 완료: {self.config.ml_model_path} "
+                    f"(min_conf={self.config.ml_min_confidence:.2f})"
+                )
+            else:
+                self.log(f"[ML] 모델 로드 실패: {self.ml_filter.error_reason}")
         self._notify(
             f"[봇 시작]\n{self.config.symbol}\n모드: {'모의 실행' if self.config.dry_run else '실거래'}"
         )
@@ -576,7 +751,14 @@ class FuturesBotEngine:
                     prompt = self._build_gpt_prompt(signal, live_price, chart_points)
                     gpt_signal, gpt_reason = self.gpt_filter.request_signal(prompt)
 
-                effective_signal, signal_reason = self._combine_signals(signal, gpt_signal)
+                ml_signal = "HOLD"
+                ml_reason = "disabled"
+                if self.config.ml_filter_enabled:
+                    ml_signal, ml_reason = self.ml_filter.request_signal(chart_points)
+
+                effective_signal, signal_reason = self._combine_signals(
+                    signal, gpt_signal, ml_signal
+                )
 
                 self.state_cb(
                     {
@@ -589,14 +771,15 @@ class FuturesBotEngine:
                         "signal": self._signal_ko(effective_signal),
                         "ma_signal": self._signal_ko(signal),
                         "gpt_signal": self._signal_ko(gpt_signal),
+                        "ml_signal": self._signal_ko(ml_signal),
                         "chart": chart_points,
                         "live_price": live_price,
                     }
                 )
 
                 self.log(
-                    f"[신호] ma={signal} gpt={gpt_signal} -> 최종={effective_signal} "
-                    f"reason={signal_reason}/{gpt_reason} 포지션={position}"
+                    f"[신호] ma={signal} gpt={gpt_signal} ml={ml_signal} -> 최종={effective_signal} "
+                    f"reason={signal_reason}/{gpt_reason}/{ml_reason} 포지션={position}"
                 )
                 if position is None and effective_signal in {"LONG", "SHORT"}:
                     self.place_entry_with_brackets(effective_signal, live_price)
@@ -662,6 +845,7 @@ class FuturesBotUI:
             "equity": tk.StringVar(value="-"),
             "position": tk.StringVar(value="-"),
             "signal": tk.StringVar(value="-"),
+            "ml_signal": tk.StringVar(value="-"),
             "daily_pnl_pct": tk.StringVar(value="-"),
             "total_pnl_pct": tk.StringVar(value="-"),
             "mode": tk.StringVar(value="대기"),
@@ -1016,6 +1200,8 @@ class FuturesBotUI:
             ("loop_seconds", "반복 주기(초)", "30"),
             ("discord_webhook_url", "디스코드 웹훅 URL", ""),
             ("openai_api_key", "OpenAI API 키", ""),
+            ("ml_model_path", "ML 모델 경로(.pkl)", "models/btc_signal_model.pkl"),
+            ("ml_min_confidence", "ML 최소 신뢰도(0~1)", "0.40"),
         ]
 
         row = 0
@@ -1038,6 +1224,7 @@ class FuturesBotUI:
         self.vars["live_mode"] = tk.BooleanVar(value=False)
         self.vars["discord_enabled"] = tk.BooleanVar(value=False)
         self.vars["gpt_filter_enabled"] = tk.BooleanVar(value=False)
+        self.vars["ml_filter_enabled"] = tk.BooleanVar(value=False)
         self.vars["margin_mode"] = tk.StringVar(value="isolated")
         self.vars["openai_model"] = tk.StringVar(value="gpt-4o-mini")
 
@@ -1087,6 +1274,14 @@ class FuturesBotUI:
         gpt_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
         row += 1
 
+        ml_check = ttk.Checkbutton(
+            parent,
+            text="ML 보조시그널 필터 사용 (MA와 ML이 일치할 때만 진입)",
+            variable=self.vars["ml_filter_enabled"],
+        )
+        ml_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        row += 1
+
         ttk.Label(parent, text="GPT 모델 선택").grid(
             row=row, column=0, sticky="w", pady=(8, 4)
         )
@@ -1119,6 +1314,7 @@ class FuturesBotUI:
             ("자산", "equity"),
             ("포지션", "position"),
             ("신호", "signal"),
+            ("ML 신호", "ml_signal"),
             ("일일 수익률", "daily_pnl_pct"),
             ("누적 수익률", "total_pnl_pct"),
         ]
@@ -1161,6 +1357,13 @@ class FuturesBotUI:
             str(values.get("OPENAI_FILTER_ENABLED", "false")).lower()
             in {"1", "true", "yes"}
         )
+        self.vars["ml_filter_enabled"].set(
+            str(values.get("ML_FILTER_ENABLED", "false")).lower() in {"1", "true", "yes"}
+        )
+        self.vars["ml_model_path"].set(
+            values.get("ML_MODEL_PATH", "models/btc_signal_model.pkl")
+        )
+        self.vars["ml_min_confidence"].set(values.get("ML_MIN_CONFIDENCE", "0.40"))
         gpt_model = str(values.get("OPENAI_MODEL", "gpt-4o-mini")).strip()
         self._select_gpt_model(gpt_model)
         margin_mode = str(values.get("BINANCE_MARGIN_MODE", "isolated")).strip().lower()
@@ -1242,6 +1445,21 @@ class FuturesBotUI:
             "OPENAI_MODEL",
             self.vars["openai_model"].get().strip() or "gpt-4o-mini",
         )
+        set_key(
+            self.env_path,
+            "ML_FILTER_ENABLED",
+            "true" if self.vars["ml_filter_enabled"].get() else "false",
+        )
+        set_key(
+            self.env_path,
+            "ML_MODEL_PATH",
+            self.vars["ml_model_path"].get().strip() or "models/btc_signal_model.pkl",
+        )
+        set_key(
+            self.env_path,
+            "ML_MIN_CONFIDENCE",
+            self.vars["ml_min_confidence"].get().strip() or "0.40",
+        )
         margin_mode = "isolated"
         margin_var = self.vars.get("margin_mode")
         if isinstance(margin_var, tk.StringVar):
@@ -1305,6 +1523,9 @@ class FuturesBotUI:
         symbol = self.vars["symbol"].get().strip()
         if ":" not in symbol:
             symbol = f"{symbol}:USDT"
+        model_path = self.vars["ml_model_path"].get().strip() or "models/btc_signal_model.pkl"
+        if not os.path.isabs(model_path):
+            model_path = os.path.join(self.base_dir, model_path)
         margin_mode = "isolated"
         margin_var = self.vars.get("margin_mode")
         if isinstance(margin_var, tk.StringVar):
@@ -1331,6 +1552,9 @@ class FuturesBotUI:
             gpt_filter_enabled=self.vars["gpt_filter_enabled"].get(),
             openai_api_key=self.vars["openai_api_key"].get().strip(),
             openai_model=self.vars["openai_model"].get().strip() or "gpt-4o-mini",
+            ml_filter_enabled=self.vars["ml_filter_enabled"].get(),
+            ml_model_path=model_path,
+            ml_min_confidence=float(self.vars["ml_min_confidence"].get().strip() or "0.40"),
         )
 
     def start_bot(self) -> None:
@@ -1365,6 +1589,20 @@ class FuturesBotUI:
             messagebox.showerror(
                 "GPT 설정 오류",
                 "GPT 필터 사용 시 OpenAI API 키가 필요합니다.",
+            )
+            return
+        if config.ml_filter_enabled and joblib is None:
+            messagebox.showerror(
+                "ML 설정 오류",
+                "ML 필터 사용 시 joblib가 필요합니다.\n"
+                "설치: python -m pip install joblib scikit-learn",
+            )
+            return
+        if config.ml_filter_enabled and (not os.path.exists(config.ml_model_path)):
+            messagebox.showerror(
+                "ML 설정 오류",
+                f"ML 모델 파일이 없습니다:\n{config.ml_model_path}\n"
+                "먼저 train_ml_model.py로 모델을 생성하세요.",
             )
             return
 

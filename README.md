@@ -235,3 +235,30 @@ python .\train_ml_model.py --data data/btcusdt_5m_training.csv --model-out model
 - 라벨 민감도 변경: `--move-threshold-pct`
 - 예측 지평 변경: `--future-bars`
 - 데이터량 증가: `--batches` 확대
+
+### 9-4. 학습 모델을 봇에 연결하기 (UI)
+
+1) 먼저 모델 파일 생성:
+
+```powershell
+python .\train_ml_model.py --data data/btcusdt_5m_training.csv --model-out models/btc_signal_model.pkl
+```
+
+2) 봇 UI에서 아래 항목 설정:
+- `ML 모델 경로(.pkl)` : 예) `models/btc_signal_model.pkl`
+- `ML 최소 신뢰도(0~1)` : 예) `0.40`
+- `ML 보조시그널 필터 사용` 체크
+
+3) 동작 방식:
+- 기본 신호는 MA 교차(`LONG`/`SHORT`)
+- GPT 필터가 켜져 있으면 MA와 GPT가 일치해야 통과
+- ML 필터가 켜져 있으면 MA와 ML이 일치해야 통과
+- 즉, 둘 다 켜면 **MA + GPT + ML 전부 일치할 때만 진입**
+
+`.env` 저장 키:
+
+```env
+ML_FILTER_ENABLED=true
+ML_MODEL_PATH=models/btc_signal_model.pkl
+ML_MIN_CONFIDENCE=0.40
+```
