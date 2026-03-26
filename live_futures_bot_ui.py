@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import ccxt
+import numpy as np
 import pandas as pd
 import tkinter as tk
 from dotenv import dotenv_values, set_key
@@ -21,6 +22,11 @@ try:
     import joblib
 except Exception:
     joblib = None
+
+try:
+    from sklearn.ensemble import RandomForestClassifier
+except Exception:
+    RandomForestClassifier = None
 
 
 @dataclass
@@ -44,6 +50,8 @@ class BotConfig:
     signal_mode: str
     ml_model_path: str
     ml_min_confidence: float
+    auto_train_enabled: bool
+    auto_train_interval_minutes: int
 
 
 class DiscordNotifier:
@@ -77,6 +85,20 @@ class DiscordNotifier:
 
 
 class MlSignalFilter:
+    DEFAULT_FEATURES = [
+        "ret_1",
+        "ret_3",
+        "ret_6",
+        "ma_gap_pct",
+        "ema_gap_pct",
+        "rsi_14",
+        "atr_pct",
+        "vol_z_20",
+        "body_pct",
+        "upper_wick_pct",
+        "lower_wick_pct",
+    ]
+
     def __init__(self, enabled: bool, model_path: str, min_confidence: float):
         self.enabled = enabled and bool((model_path or "").strip())
         self.model_path = (model_path or "").strip()
@@ -85,6 +107,7 @@ class MlSignalFilter:
         self.features: list[str] = []
         self.error_reason = "disabled"
         self.ready = False
+        self._lock = threading.Lock()
         self._load_model()
 
     def _load_model(self) -> None:
@@ -107,24 +130,17 @@ class MlSignalFilter:
                 self.model = payload
                 self.features = []
             if not self.features:
-                self.features = [
-                    "ret_1",
-                    "ret_3",
-                    "ret_6",
-                    "ma_gap_pct",
-                    "ema_gap_pct",
-                    "rsi_14",
-                    "atr_pct",
-                    "vol_z_20",
-                    "body_pct",
-                    "upper_wick_pct",
-                    "lower_wick_pct",
-                ]
+                self.features = list(self.DEFAULT_FEATURES)
             self.ready = True
             self.error_reason = "ok"
         except Exception as exc:
             self.error_reason = f"load_error:{exc}"
             self.ready = False
+
+    def reload(self) -> tuple[bool, str]:
+        with self._lock:
+            self._load_model()
+            return self.ready, self.error_reason
 
     @staticmethod
     def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -180,8 +196,13 @@ class MlSignalFilter:
     def request_signal(self, chart_points: list[dict]) -> tuple[str, str]:
         if not self.enabled:
             return "HOLD", "disabled"
-        if not self.ready or self.model is None:
-            return "HOLD", self.error_reason
+        with self._lock:
+            ready = self.ready
+            model = self.model
+            features = list(self.features)
+            error_reason = self.error_reason
+        if not ready or model is None:
+            return "HOLD", error_reason
         if len(chart_points) < 30:
             return "HOLD", "insufficient_data"
 
@@ -189,17 +210,17 @@ class MlSignalFilter:
             feat = self._build_features(chart_points).dropna().reset_index(drop=True)
             if feat.empty:
                 return "HOLD", "insufficient_data"
-            missing = [c for c in self.features if c not in feat.columns]
+            missing = [c for c in features if c not in feat.columns]
             if missing:
                 return "HOLD", f"missing_features:{','.join(missing[:3])}"
 
-            x = feat[self.features].tail(1)
-            pred = int(self.model.predict(x)[0])
+            x = feat[features].tail(1)
+            pred = int(model.predict(x)[0])
             confidence = 1.0
 
-            if hasattr(self.model, "predict_proba"):
-                probs = self.model.predict_proba(x)[0]
-                classes = [int(v) for v in getattr(self.model, "classes_", [])]
+            if hasattr(model, "predict_proba"):
+                probs = model.predict_proba(x)[0]
+                classes = [int(v) for v in getattr(model, "classes_", [])]
                 if pred in classes:
                     idx = classes.index(pred)
                     confidence = float(probs[idx])
@@ -236,8 +257,9 @@ class FuturesBotEngine:
             webhook_url=config.discord_webhook_url,
         )
         self.use_ml = config.signal_mode in {"ml_only", "ma_ml"}
+        self.auto_train_enabled = bool(config.auto_train_enabled)
         self.ml_filter = MlSignalFilter(
-            enabled=self.use_ml,
+            enabled=(self.use_ml or self.auto_train_enabled),
             model_path=config.ml_model_path,
             min_confidence=config.ml_min_confidence,
         )
@@ -247,6 +269,7 @@ class FuturesBotEngine:
         self.daily_date = None
         self.seen_trade_ids: set[str] = set()
         self.last_position_snapshot: Optional[dict] = None
+        self.auto_train_thread: Optional[threading.Thread] = None
 
     @staticmethod
     def _signal_ko(signal: str) -> str:
@@ -290,6 +313,126 @@ class FuturesBotEngine:
                     time.sleep(0.2)
                     return fn(*args, **kwargs)
             raise
+
+    @staticmethod
+    def _timeframe_to_millis(timeframe: str) -> int:
+        unit = timeframe[-1]
+        value = int(timeframe[:-1])
+        factors = {"m": 60_000, "h": 3_600_000, "d": 86_400_000}
+        if unit not in factors:
+            raise ValueError(f"지원하지 않는 timeframe: {timeframe}")
+        return value * factors[unit]
+
+    def _fetch_training_ohlcv(self, limit: int = 1000, batches: int = 8) -> pd.DataFrame:
+        tf_ms = self._timeframe_to_millis(self.config.timeframe)
+        since = self.exchange.milliseconds() - (tf_ms * limit * batches)
+        rows: list[list[float]] = []
+
+        for _ in range(batches):
+            if self.stop_event.is_set():
+                break
+            ohlcv = self._xcall(
+                self.exchange.fetch_ohlcv,
+                self.config.symbol,
+                timeframe=self.config.timeframe,
+                since=since,
+                limit=limit,
+            )
+            if not ohlcv:
+                break
+            rows.extend(ohlcv)
+            since = ohlcv[-1][0] + tf_ms
+            time.sleep(self.exchange.rateLimit / 1000.0)
+
+        if not rows:
+            raise RuntimeError("자동학습용 OHLCV를 가져오지 못했습니다.")
+
+        df = pd.DataFrame(
+            rows,
+            columns=["timestamp", "open", "high", "low", "close", "volume"],
+        )
+        return df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(
+            drop=True
+        )
+
+    def _build_training_dataset(
+        self,
+        ohlcv_df: pd.DataFrame,
+        future_bars: int = 3,
+        move_threshold_pct: float = 0.0015,
+    ) -> pd.DataFrame:
+        points = ohlcv_df[["open", "high", "low", "close", "volume"]].to_dict("records")
+        feat = self.ml_filter._build_features(points)
+        feat["future_return"] = feat["close"].shift(-future_bars) / feat["close"] - 1.0
+        feat["signal"] = np.where(
+            feat["future_return"] > move_threshold_pct,
+            1,
+            np.where(feat["future_return"] < -move_threshold_pct, -1, 0),
+        )
+        return feat.dropna().reset_index(drop=True)
+
+    def _train_model_payload(self, dataset: pd.DataFrame) -> dict:
+        if RandomForestClassifier is None:
+            raise RuntimeError("scikit-learn 미설치")
+        feature_cols = list(self.ml_filter.DEFAULT_FEATURES)
+        required = feature_cols + ["signal"]
+        missing = [c for c in required if c not in dataset.columns]
+        if missing:
+            raise RuntimeError(f"학습 데이터 컬럼 누락: {missing[:3]}")
+        dataset = dataset.dropna(subset=required).reset_index(drop=True)
+        if len(dataset) < 300:
+            raise RuntimeError("학습 샘플 부족(300개 미만)")
+
+        x_train = dataset[feature_cols]
+        y_train = dataset["signal"].astype(int)
+        model = RandomForestClassifier(
+            n_estimators=400,
+            max_depth=10,
+            min_samples_leaf=5,
+            class_weight="balanced_subsample",
+            random_state=42,
+            n_jobs=-1,
+        )
+        model.fit(x_train, y_train)
+        return {
+            "model": model,
+            "features": feature_cols,
+            "labels": [-1, 0, 1],
+            "meta": {"rows": int(len(dataset)), "timeframe": self.config.timeframe},
+        }
+
+    def _run_auto_train_once(self) -> None:
+        if joblib is None:
+            raise RuntimeError("joblib 미설치")
+        self.log("[학습] 자동학습 시작")
+        ohlcv_df = self._fetch_training_ohlcv(limit=1000, batches=8)
+        dataset = self._build_training_dataset(ohlcv_df, future_bars=3, move_threshold_pct=0.0015)
+        payload = self._train_model_payload(dataset)
+
+        model_path = Path(self.config.ml_model_path)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(payload, model_path)
+        ready, reason = self.ml_filter.reload()
+        if ready:
+            self.log(f"[학습] 자동학습 완료 rows={len(dataset)} model={model_path}")
+            self._notify(
+                f"[자동학습 완료]\n{self.config.symbol} {self.config.timeframe}\n샘플={len(dataset)}"
+            )
+        else:
+            self.log(f"[학습] 모델 저장 후 재로딩 실패: {reason}")
+
+    def _run_auto_train_loop(self) -> None:
+        interval_seconds = max(5, int(self.config.auto_train_interval_minutes)) * 60
+        while not self.stop_event.is_set():
+            try:
+                self._run_auto_train_once()
+            except Exception as exc:
+                self.log(f"[학습] 자동학습 실패: {exc}")
+                self._notify(f"[자동학습 오류]\n{self.config.symbol}\n{exc}")
+            for _ in range(interval_seconds):
+                if self.stop_event.is_set():
+                    break
+                time.sleep(1)
 
     def _combine_signals(
         self,
@@ -652,6 +795,10 @@ class FuturesBotEngine:
         self.setup_exchange()
         self.log("[시스템] 엔진 시작 완료.")
         self.log(f"[전략] 매매 기준 모드: {self.config.signal_mode}")
+        if self.auto_train_enabled:
+            self.log(
+                f"[학습] 자동학습 모드 ON (주기 {self.config.auto_train_interval_minutes}분)"
+            )
         if self.use_ml:
             if self.ml_filter.ready:
                 self.log(
@@ -667,6 +814,12 @@ class FuturesBotEngine:
         # Separate fast ticker loop for smoother chart movement without affecting trade loop timing.
         ticker_thread = threading.Thread(target=self._run_ticker_loop, daemon=True)
         ticker_thread.start()
+        if self.auto_train_enabled:
+            self.auto_train_thread = threading.Thread(
+                target=self._run_auto_train_loop,
+                daemon=True,
+            )
+            self.auto_train_thread.start()
 
         while not self.stop_event.is_set():
             try:
@@ -1142,6 +1295,7 @@ class FuturesBotUI:
             ("discord_webhook_url", "디스코드 웹훅 URL", ""),
             ("ml_model_path", "ML 모델 경로(.pkl)", "models/btc_signal_model.pkl"),
             ("ml_min_confidence", "ML 최소 신뢰도(0~1)", "0.40"),
+            ("auto_train_interval_minutes", "자동학습 주기(분)", "60"),
         ]
 
         row = 0
@@ -1164,6 +1318,7 @@ class FuturesBotUI:
         self.vars["discord_enabled"] = tk.BooleanVar(value=False)
         self.vars["margin_mode"] = tk.StringVar(value="isolated")
         self.vars["signal_mode"] = tk.StringVar(value="ma_only")
+        self.vars["auto_train_enabled"] = tk.BooleanVar(value=False)
 
         live_check = ttk.Checkbutton(
             parent,
@@ -1226,6 +1381,14 @@ class FuturesBotUI:
         self._select_signal_mode("ma_only")
         row += 1
 
+        auto_train_check = ttk.Checkbutton(
+            parent,
+            text="자동학습 모드 사용 (주기마다 데이터 수집+재학습)",
+            variable=self.vars["auto_train_enabled"],
+        )
+        auto_train_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        row += 1
+
         parent.columnconfigure(1, weight=1)
 
     def _build_status_panel(self, parent: ttk.LabelFrame) -> None:
@@ -1277,6 +1440,12 @@ class FuturesBotUI:
             values.get("ML_MODEL_PATH", "models/btc_signal_model.pkl")
         )
         self.vars["ml_min_confidence"].set(values.get("ML_MIN_CONFIDENCE", "0.40"))
+        self.vars["auto_train_enabled"].set(
+            str(values.get("AUTO_TRAIN_ENABLED", "false")).lower() in {"1", "true", "yes"}
+        )
+        self.vars["auto_train_interval_minutes"].set(
+            values.get("AUTO_TRAIN_INTERVAL_MINUTES", "60")
+        )
         signal_mode = str(values.get("BOT_SIGNAL_MODE", "")).strip().lower()
         if signal_mode not in {"ma_only", "ml_only", "ma_ml"}:
             # Backward compatibility with older ML_FILTER_ENABLED checkbox.
@@ -1374,6 +1543,16 @@ class FuturesBotUI:
             self.env_path,
             "ML_MIN_CONFIDENCE",
             self.vars["ml_min_confidence"].get().strip() or "0.40",
+        )
+        set_key(
+            self.env_path,
+            "AUTO_TRAIN_ENABLED",
+            "true" if self.vars["auto_train_enabled"].get() else "false",
+        )
+        set_key(
+            self.env_path,
+            "AUTO_TRAIN_INTERVAL_MINUTES",
+            self.vars["auto_train_interval_minutes"].get().strip() or "60",
         )
         margin_mode = "isolated"
         margin_var = self.vars.get("margin_mode")
@@ -1473,6 +1652,10 @@ class FuturesBotUI:
             signal_mode=signal_mode,
             ml_model_path=model_path,
             ml_min_confidence=float(self.vars["ml_min_confidence"].get().strip() or "0.40"),
+            auto_train_enabled=self.vars["auto_train_enabled"].get(),
+            auto_train_interval_minutes=int(
+                self.vars["auto_train_interval_minutes"].get().strip() or "60"
+            ),
         )
 
     def start_bot(self) -> None:
@@ -1510,7 +1693,21 @@ class FuturesBotUI:
                 "설치: python -m pip install joblib scikit-learn",
             )
             return
-        if config.signal_mode in {"ml_only", "ma_ml"} and (not os.path.exists(config.ml_model_path)):
+        if config.auto_train_enabled and (joblib is None or RandomForestClassifier is None):
+            messagebox.showerror(
+                "자동학습 설정 오류",
+                "자동학습 사용 시 joblib/scikit-learn이 필요합니다.\n"
+                "설치: python -m pip install joblib scikit-learn",
+            )
+            return
+        if config.auto_train_interval_minutes < 5:
+            messagebox.showerror("자동학습 설정 오류", "자동학습 주기는 5분 이상이어야 합니다.")
+            return
+        if (
+            config.signal_mode in {"ml_only", "ma_ml"}
+            and (not config.auto_train_enabled)
+            and (not os.path.exists(config.ml_model_path))
+        ):
             messagebox.showerror(
                 "ML 설정 오류",
                 f"ML 모델 파일이 없습니다:\n{config.ml_model_path}\n"

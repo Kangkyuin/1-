@@ -133,6 +133,8 @@ UI에서 아래 항목 선택/입력:
   - `MA+ML 기준`
 - `ML 모델 경로(.pkl)` (예: `models/btc_signal_model.pkl`)
 - `ML 최소 신뢰도(0~1)` (예: `0.40`)
+- `자동학습 모드 사용` (체크)
+- `자동학습 주기(분)` (예: `60`, 최소 5)
 
 `.env` 저장 키:
 
@@ -140,6 +142,8 @@ UI에서 아래 항목 선택/입력:
 BOT_SIGNAL_MODE=ma_ml
 ML_MODEL_PATH=models/btc_signal_model.pkl
 ML_MIN_CONFIDENCE=0.40
+AUTO_TRAIN_ENABLED=true
+AUTO_TRAIN_INTERVAL_MINUTES=60
 ```
 
 ---
@@ -256,6 +260,11 @@ python .\train_ml_model.py --data data/btcusdt_5m_training.csv --model-out model
 - `MA 기준`: MA 교차 신호로만 진입
 - `ML 기준`: ML 신호로만 진입
 - `MA+ML 기준`: MA와 ML이 일치할 때만 진입
+- 자동학습 ON이면 주기마다:
+  - 최신 데이터 수집
+  - 모델 재학습
+  - `.pkl` 덮어쓰기
+  - 봇 내 모델 자동 재로딩
 
 `.env` 저장 키:
 
@@ -263,4 +272,6 @@ python .\train_ml_model.py --data data/btcusdt_5m_training.csv --model-out model
 BOT_SIGNAL_MODE=ma_ml
 ML_MODEL_PATH=models/btc_signal_model.pkl
 ML_MIN_CONFIDENCE=0.40
+AUTO_TRAIN_ENABLED=true
+AUTO_TRAIN_INTERVAL_MINUTES=60
 ```
