@@ -38,7 +38,7 @@
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install ccxt pandas python-dotenv
+python -m pip install ccxt pandas python-dotenv numpy scikit-learn joblib
 ```
 
 ---
@@ -199,3 +199,39 @@ EXE에서도 동일하게 사용하려면:
 - [ ] 일일 손실 제한 1% 내외
 - [ ] 모의 실행 및 소액 실거래 로그 충분히 검증
 - [ ] 오류 알림(디스코드) 정상 수신 확인
+
+---
+
+## 9) 학습용 데이터 수집/모델 학습
+
+봇을 실행한다고 자동으로 학습 데이터가 쌓이진 않습니다.  
+아래 스크립트를 별도로 실행해서 **데이터셋 생성 -> 모델 학습**을 진행하세요.
+
+### 9-1. 데이터셋 생성
+
+```powershell
+python .\collect_ml_data.py --symbol BTC/USDT --timeframe 5m --limit 1000 --batches 8 --future-bars 3 --move-threshold-pct 0.0015 --output data/btcusdt_5m_training.csv
+```
+
+출력 CSV에는 OHLCV + 기술지표 피처 + 라벨(`signal`)이 저장됩니다.
+- `signal = 1` : 미래 구간 상승 (LONG 후보)
+- `signal = -1` : 미래 구간 하락 (SHORT 후보)
+- `signal = 0` : 중립
+
+### 9-2. 모델 학습
+
+```powershell
+python .\train_ml_model.py --data data/btcusdt_5m_training.csv --model-out models/btc_signal_model.pkl
+```
+
+학습 결과:
+- `classification_report`
+- `confusion_matrix`
+- 모델 파일(`.pkl`) 저장
+
+### 9-3. 추천 튜닝 포인트
+
+- 타임프레임 변경: `--timeframe 1m`, `15m`, `1h`
+- 라벨 민감도 변경: `--move-threshold-pct`
+- 예측 지평 변경: `--future-bars`
+- 데이터량 증가: `--batches` 확대
