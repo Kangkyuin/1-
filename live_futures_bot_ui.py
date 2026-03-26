@@ -1137,9 +1137,24 @@ class FuturesBotUI:
         values = dotenv_values(self.env_path)
         self.vars["api_key"].set(values.get("BINANCE_API_KEY", ""))
         self.vars["api_secret"].set(values.get("BINANCE_API_SECRET", ""))
+        self.vars["symbol"].set(values.get("BOT_SYMBOL", "BTC/USDT"))
+        self.vars["timeframe"].set(values.get("BOT_TIMEFRAME", "5m"))
+        self.vars["short_ma"].set(values.get("BOT_SHORT_MA", "7"))
+        self.vars["long_ma"].set(values.get("BOT_LONG_MA", "25"))
+        self.vars["leverage"].set(values.get("BOT_LEVERAGE", "2"))
+        self.vars["risk_per_trade"].set(values.get("BOT_RISK_PER_TRADE", "0.003"))
+        self.vars["stop_loss_pct"].set(values.get("BOT_STOP_LOSS_PCT", "0.007"))
+        self.vars["take_profit_pct"].set(values.get("BOT_TAKE_PROFIT_PCT", "0.014"))
+        self.vars["max_daily_loss_pct"].set(
+            values.get("BOT_MAX_DAILY_LOSS_PCT", "0.01")
+        )
+        self.vars["loop_seconds"].set(values.get("BOT_LOOP_SECONDS", "30"))
         self.vars["discord_webhook_url"].set(values.get("DISCORD_WEBHOOK_URL", ""))
         self.vars["discord_enabled"].set(
             str(values.get("DISCORD_ENABLED", "false")).lower() in {"1", "true", "yes"}
+        )
+        self.vars["live_mode"].set(
+            str(values.get("BOT_LIVE_MODE", "false")).lower() in {"1", "true", "yes"}
         )
         self.vars["openai_api_key"].set(values.get("OPENAI_API_KEY", ""))
         self.vars["gpt_filter_enabled"].set(
@@ -1167,6 +1182,41 @@ class FuturesBotUI:
 
         set_key(self.env_path, "BINANCE_API_KEY", api_key)
         set_key(self.env_path, "BINANCE_API_SECRET", api_secret)
+        set_key(self.env_path, "BOT_SYMBOL", self.vars["symbol"].get().strip())
+        set_key(self.env_path, "BOT_TIMEFRAME", self.vars["timeframe"].get().strip())
+        set_key(self.env_path, "BOT_SHORT_MA", self.vars["short_ma"].get().strip())
+        set_key(self.env_path, "BOT_LONG_MA", self.vars["long_ma"].get().strip())
+        set_key(self.env_path, "BOT_LEVERAGE", self.vars["leverage"].get().strip())
+        set_key(
+            self.env_path,
+            "BOT_RISK_PER_TRADE",
+            self.vars["risk_per_trade"].get().strip(),
+        )
+        set_key(
+            self.env_path,
+            "BOT_STOP_LOSS_PCT",
+            self.vars["stop_loss_pct"].get().strip(),
+        )
+        set_key(
+            self.env_path,
+            "BOT_TAKE_PROFIT_PCT",
+            self.vars["take_profit_pct"].get().strip(),
+        )
+        set_key(
+            self.env_path,
+            "BOT_MAX_DAILY_LOSS_PCT",
+            self.vars["max_daily_loss_pct"].get().strip(),
+        )
+        set_key(
+            self.env_path,
+            "BOT_LOOP_SECONDS",
+            self.vars["loop_seconds"].get().strip(),
+        )
+        set_key(
+            self.env_path,
+            "BOT_LIVE_MODE",
+            "true" if self.vars["live_mode"].get() else "false",
+        )
         set_key(
             self.env_path,
             "DISCORD_WEBHOOK_URL",
