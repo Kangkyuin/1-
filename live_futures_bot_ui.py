@@ -41,7 +41,7 @@ class BotConfig:
     dry_run: bool
     discord_enabled: bool
     discord_webhook_url: str
-    ml_filter_enabled: bool
+    signal_mode: str
     ml_model_path: str
     ml_min_confidence: float
 
@@ -235,8 +235,9 @@ class FuturesBotEngine:
             enabled=config.discord_enabled,
             webhook_url=config.discord_webhook_url,
         )
+        self.use_ml = config.signal_mode in {"ml_only", "ma_ml"}
         self.ml_filter = MlSignalFilter(
-            enabled=config.ml_filter_enabled,
+            enabled=self.use_ml,
             model_path=config.ml_model_path,
             min_confidence=config.ml_min_confidence,
         )
@@ -268,14 +269,23 @@ class FuturesBotEngine:
         ma_signal: str,
         ml_signal: str,
     ) -> tuple[str, str]:
+        mode = self.config.signal_mode
+        if mode == "ma_only":
+            if ma_signal in {"LONG", "SHORT"}:
+                return ma_signal, "ma_only"
+            return "HOLD", "ma_hold_or_invalid"
+        if mode == "ml_only":
+            if ml_signal in {"LONG", "SHORT"}:
+                return ml_signal, "ml_only"
+            return "HOLD", "ml_hold_or_invalid"
+
         if ma_signal not in {"LONG", "SHORT"}:
             return "HOLD", "ma_hold_or_invalid"
-
-        if self.config.ml_filter_enabled:
+        if self.use_ml:
             if ml_signal != ma_signal:
                 return "HOLD", "blocked_by_ml"
             return ma_signal, "agree_ml"
-        return ma_signal, "ma_only"
+        return ma_signal, "ma_ml_fallback"
 
     def setup_exchange(self) -> None:
         self.exchange = ccxt.binanceusdm(
@@ -607,7 +617,8 @@ class FuturesBotEngine:
         self.log("[시스템] 엔진 시작 중...")
         self.setup_exchange()
         self.log("[시스템] 엔진 시작 완료.")
-        if self.config.ml_filter_enabled:
+        self.log(f"[전략] 매매 기준 모드: {self.config.signal_mode}")
+        if self.use_ml:
             if self.ml_filter.ready:
                 self.log(
                     f"[ML] 모델 로드 완료: {self.config.ml_model_path} "
@@ -653,9 +664,9 @@ class FuturesBotEngine:
                     )
                 self.last_position_snapshot = position
 
-                ml_signal = "HOLD"
-                ml_reason = "disabled"
-                if self.config.ml_filter_enabled:
+                ml_signal = "-"
+                ml_reason = "not_used"
+                if self.use_ml:
                     ml_signal, ml_reason = self.ml_filter.request_signal(chart_points)
 
                 effective_signal, signal_reason = self._combine_signals(
@@ -1121,8 +1132,8 @@ class FuturesBotUI:
 
         self.vars["live_mode"] = tk.BooleanVar(value=False)
         self.vars["discord_enabled"] = tk.BooleanVar(value=False)
-        self.vars["ml_filter_enabled"] = tk.BooleanVar(value=False)
         self.vars["margin_mode"] = tk.StringVar(value="isolated")
+        self.vars["signal_mode"] = tk.StringVar(value="ma_only")
 
         live_check = ttk.Checkbutton(
             parent,
@@ -1162,12 +1173,27 @@ class FuturesBotUI:
         discord_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
         row += 1
 
-        ml_check = ttk.Checkbutton(
-            parent,
-            text="ML 보조시그널 필터 사용 (MA와 ML이 일치할 때만 진입)",
-            variable=self.vars["ml_filter_enabled"],
+        ttk.Label(parent, text="매매 기준 선택").grid(
+            row=row, column=0, sticky="w", pady=(8, 4)
         )
-        ml_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        signal_mode_frame = ttk.Frame(parent)
+        signal_mode_frame.grid(row=row, column=1, sticky="w", pady=(8, 4), padx=(8, 0))
+        self.signal_mode_buttons: dict[str, ttk.Button] = {}
+        signal_mode_presets = [
+            ("ma_only", "MA 기준"),
+            ("ml_only", "ML 기준"),
+            ("ma_ml", "MA+ML 기준"),
+        ]
+        for mode_name, label in signal_mode_presets:
+            btn = ttk.Button(
+                signal_mode_frame,
+                text=label,
+                style="ModeOff.TButton",
+                command=lambda m=mode_name: self._select_signal_mode(m),
+            )
+            btn.pack(side="left", padx=(0, 6))
+            self.signal_mode_buttons[mode_name] = btn
+        self._select_signal_mode("ma_only")
         row += 1
 
         parent.columnconfigure(1, weight=1)
@@ -1217,13 +1243,20 @@ class FuturesBotUI:
         self.vars["live_mode"].set(
             str(values.get("BOT_LIVE_MODE", "false")).lower() in {"1", "true", "yes"}
         )
-        self.vars["ml_filter_enabled"].set(
-            str(values.get("ML_FILTER_ENABLED", "false")).lower() in {"1", "true", "yes"}
-        )
         self.vars["ml_model_path"].set(
             values.get("ML_MODEL_PATH", "models/btc_signal_model.pkl")
         )
         self.vars["ml_min_confidence"].set(values.get("ML_MIN_CONFIDENCE", "0.40"))
+        signal_mode = str(values.get("BOT_SIGNAL_MODE", "")).strip().lower()
+        if signal_mode not in {"ma_only", "ml_only", "ma_ml"}:
+            # Backward compatibility with older ML_FILTER_ENABLED checkbox.
+            legacy_ml = str(values.get("ML_FILTER_ENABLED", "false")).lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            signal_mode = "ma_ml" if legacy_ml else "ma_only"
+        self._select_signal_mode(signal_mode)
         margin_mode = str(values.get("BINANCE_MARGIN_MODE", "isolated")).strip().lower()
         if margin_mode not in {"isolated", "cross"}:
             margin_mode = "isolated"
@@ -1290,8 +1323,17 @@ class FuturesBotUI:
         )
         set_key(
             self.env_path,
+            "BOT_SIGNAL_MODE",
+            self.vars["signal_mode"].get().strip() or "ma_only",
+        )
+        set_key(
+            self.env_path,
             "ML_FILTER_ENABLED",
-            "true" if self.vars["ml_filter_enabled"].get() else "false",
+            (
+                "true"
+                if (self.vars["signal_mode"].get().strip() or "ma_only") in {"ml_only", "ma_ml"}
+                else "false"
+            ),
         )
         set_key(
             self.env_path,
@@ -1343,6 +1385,25 @@ class FuturesBotUI:
             self.margin_iso_btn.configure(style="ModeOff.TButton")
             self.margin_cross_btn.configure(style="ModeOn.TButton")
 
+    def _select_signal_mode(self, mode: str) -> None:
+        allowed = {"ma_only", "ml_only", "ma_ml"}
+        normalized = (mode or "ma_only").strip().lower()
+        if normalized not in allowed:
+            normalized = "ma_only"
+
+        mode_var = self.vars.get("signal_mode")
+        if not isinstance(mode_var, tk.StringVar):
+            mode_var = tk.StringVar(value=normalized)
+            self.vars["signal_mode"] = mode_var
+        mode_var.set(normalized)
+
+        if not hasattr(self, "signal_mode_buttons"):
+            return
+        for mode_name, btn in self.signal_mode_buttons.items():
+            btn.configure(
+                style="ModeOn.TButton" if mode_name == normalized else "ModeOff.TButton"
+            )
+
     def _build_config(self) -> BotConfig:
         symbol = self.vars["symbol"].get().strip()
         if ":" not in symbol:
@@ -1350,6 +1411,12 @@ class FuturesBotUI:
         model_path = self.vars["ml_model_path"].get().strip() or "models/btc_signal_model.pkl"
         if not os.path.isabs(model_path):
             model_path = os.path.join(self.base_dir, model_path)
+        signal_mode = "ma_only"
+        signal_mode_var = self.vars.get("signal_mode")
+        if isinstance(signal_mode_var, tk.StringVar):
+            mode = signal_mode_var.get().strip().lower()
+            if mode in {"ma_only", "ml_only", "ma_ml"}:
+                signal_mode = mode
         margin_mode = "isolated"
         margin_var = self.vars.get("margin_mode")
         if isinstance(margin_var, tk.StringVar):
@@ -1373,7 +1440,7 @@ class FuturesBotUI:
             dry_run=not self.vars["live_mode"].get(),
             discord_enabled=self.vars["discord_enabled"].get(),
             discord_webhook_url=self.vars["discord_webhook_url"].get().strip(),
-            ml_filter_enabled=self.vars["ml_filter_enabled"].get(),
+            signal_mode=signal_mode,
             ml_model_path=model_path,
             ml_min_confidence=float(self.vars["ml_min_confidence"].get().strip() or "0.40"),
         )
@@ -1406,14 +1473,14 @@ class FuturesBotUI:
                 "디스코드 알림 사용 시 웹훅 URL이 필요합니다.",
             )
             return
-        if config.ml_filter_enabled and joblib is None:
+        if config.signal_mode in {"ml_only", "ma_ml"} and joblib is None:
             messagebox.showerror(
                 "ML 설정 오류",
                 "ML 필터 사용 시 joblib가 필요합니다.\n"
                 "설치: python -m pip install joblib scikit-learn",
             )
             return
-        if config.ml_filter_enabled and (not os.path.exists(config.ml_model_path)):
+        if config.signal_mode in {"ml_only", "ma_ml"} and (not os.path.exists(config.ml_model_path)):
             messagebox.showerror(
                 "ML 설정 오류",
                 f"ML 모델 파일이 없습니다:\n{config.ml_model_path}\n"

@@ -16,7 +16,7 @@
 - API 키 자동 저장/자동 불러오기
 - 체결내역 테이블 (실시간 업데이트)
 - 디스코드 웹훅 알림 (진입/청산/오류/리스크)
-- ML 보조 시그널 필터 (선택)
+- 매매 기준 모드 버튼 (MA / ML / MA+ML)
 - 차트 고급화:
   - 캔들(OHLC) + 단기/장기 MA
   - 거래량(Volume) 패널
@@ -62,7 +62,8 @@ python .\live_futures_bot_ui.py
 - 1회 리스크, 손절/익절 비율
 - 일일 최대손실 비율, 반복 주기
 - 디스코드 웹훅 설정
-- ML 필터/모델 설정
+- 매매 기준 모드
+- ML 모델/신뢰도 설정
 
 ---
 
@@ -77,7 +78,7 @@ UI에서 아래 항목 입력 후 저장:
 ```env
 DISCORD_ENABLED=true
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-ML_FILTER_ENABLED=false
+BOT_SIGNAL_MODE=ma_only
 ML_MODEL_PATH=models/btc_signal_model.pkl
 ML_MIN_CONFIDENCE=0.40
 ```
@@ -96,9 +97,11 @@ ML_MIN_CONFIDENCE=0.40
 - LONG: 단기 MA가 장기 MA를 상향 돌파
 - SHORT: 단기 MA가 장기 MA를 하향 돌파
 - 포지션이 없을 때만 신규 진입
-- ML 필터를 켜면:
-  - MA 신호와 ML 신호가 **같을 때만** 진입
-  - 불일치 또는 ML 오류 시 `HOLD`
+- 매매 기준 모드(`BOT_SIGNAL_MODE`):
+  - `ma_only`: MA 신호만 기준
+  - `ml_only`: ML 신호만 기준
+  - `ma_ml`: MA와 ML이 일치할 때만 진입
+- ML 오류/신뢰도 미달 시 ML 신호는 `HOLD` 처리
 - 진입 시:
   - `STOP_MARKET` + `reduceOnly` 손절
   - `TAKE_PROFIT_MARKET` + `reduceOnly` 익절
@@ -121,17 +124,20 @@ ML_MIN_CONFIDENCE=0.40
 
 ---
 
-## 6-2) ML 보조 필터 설정 (선택)
+## 6-2) 매매 기준 모드 + ML 설정
 
-UI에서 아래 항목 입력:
-- `ML 보조시그널 필터 사용 (MA와 ML이 일치할 때만 진입)`
+UI에서 아래 항목 선택/입력:
+- `매매 기준 선택` 버튼:
+  - `MA 기준`
+  - `ML 기준`
+  - `MA+ML 기준`
 - `ML 모델 경로(.pkl)` (예: `models/btc_signal_model.pkl`)
 - `ML 최소 신뢰도(0~1)` (예: `0.40`)
 
 `.env` 저장 키:
 
 ```env
-ML_FILTER_ENABLED=true
+BOT_SIGNAL_MODE=ma_ml
 ML_MODEL_PATH=models/btc_signal_model.pkl
 ML_MIN_CONFIDENCE=0.40
 ```
@@ -242,18 +248,19 @@ python .\train_ml_model.py --data data/btcusdt_5m_training.csv --model-out model
 ```
 
 2) 봇 UI에서 아래 항목 설정:
+- `매매 기준 선택` 버튼 (`MA 기준` / `ML 기준` / `MA+ML 기준`)
 - `ML 모델 경로(.pkl)` : 예) `models/btc_signal_model.pkl`
 - `ML 최소 신뢰도(0~1)` : 예) `0.40`
-- `ML 보조시그널 필터 사용` 체크
 
 3) 동작 방식:
-- 기본 신호는 MA 교차(`LONG`/`SHORT`)
-- ML 필터가 켜져 있으면 MA와 ML이 일치해야 통과
+- `MA 기준`: MA 교차 신호로만 진입
+- `ML 기준`: ML 신호로만 진입
+- `MA+ML 기준`: MA와 ML이 일치할 때만 진입
 
 `.env` 저장 키:
 
 ```env
-ML_FILTER_ENABLED=true
+BOT_SIGNAL_MODE=ma_ml
 ML_MODEL_PATH=models/btc_signal_model.pkl
 ML_MIN_CONFIDENCE=0.40
 ```
