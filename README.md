@@ -16,7 +16,7 @@
 - API 키 자동 저장/자동 불러오기
 - 체결내역 테이블 (실시간 업데이트)
 - 디스코드 웹훅 알림 (진입/청산/오류/리스크)
-- GPT 보조 시그널 필터 (선택)
+- ML 보조 시그널 필터 (선택)
 - 차트 고급화:
   - 캔들(OHLC) + 단기/장기 MA
   - 거래량(Volume) 패널
@@ -62,7 +62,7 @@ python .\live_futures_bot_ui.py
 - 1회 리스크, 손절/익절 비율
 - 일일 최대손실 비율, 반복 주기
 - 디스코드 웹훅 설정
-- GPT 필터/모델 설정
+- ML 필터/모델 설정
 
 ---
 
@@ -71,18 +71,15 @@ python .\live_futures_bot_ui.py
 UI에서 아래 항목 입력 후 저장:
 - 디스코드 알림 사용 (체크)
 - 디스코드 웹훅 URL
-- (선택) GPT 보조 필터 사용 시:
-  - OpenAI API 키
-  - OpenAI 모델 버튼 선택 (`gpt-4o-mini`, `gpt-4o`, `gpt-4.1-mini`)
 
 `.env`에도 자동 저장됩니다:
 
 ```env
 DISCORD_ENABLED=true
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-OPENAI_FILTER_ENABLED=false
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4o-mini
+ML_FILTER_ENABLED=false
+ML_MODEL_PATH=models/btc_signal_model.pkl
+ML_MIN_CONFIDENCE=0.40
 ```
 
 알림 이벤트:
@@ -99,9 +96,9 @@ OPENAI_MODEL=gpt-4o-mini
 - LONG: 단기 MA가 장기 MA를 상향 돌파
 - SHORT: 단기 MA가 장기 MA를 하향 돌파
 - 포지션이 없을 때만 신규 진입
-- GPT 필터를 켜면:
-  - MA 신호와 GPT 신호가 **같을 때만** 진입
-  - 불일치 또는 GPT 오류 시 `HOLD`
+- ML 필터를 켜면:
+  - MA 신호와 ML 신호가 **같을 때만** 진입
+  - 불일치 또는 ML 오류 시 `HOLD`
 - 진입 시:
   - `STOP_MARKET` + `reduceOnly` 손절
   - `TAKE_PROFIT_MARKET` + `reduceOnly` 익절
@@ -124,19 +121,19 @@ OPENAI_MODEL=gpt-4o-mini
 
 ---
 
-## 6-2) GPT 보조 필터 설정 (선택)
+## 6-2) ML 보조 필터 설정 (선택)
 
 UI에서 아래 항목 입력:
-- `GPT 필터 사용 (MA 신호와 동일할 때만 진입)`
-- `OpenAI API Key`
-- `OpenAI 모델` (기본: `gpt-4o-mini`)
+- `ML 보조시그널 필터 사용 (MA와 ML이 일치할 때만 진입)`
+- `ML 모델 경로(.pkl)` (예: `models/btc_signal_model.pkl`)
+- `ML 최소 신뢰도(0~1)` (예: `0.40`)
 
 `.env` 저장 키:
 
 ```env
-OPENAI_FILTER_ENABLED=true
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+ML_FILTER_ENABLED=true
+ML_MODEL_PATH=models/btc_signal_model.pkl
+ML_MIN_CONFIDENCE=0.40
 ```
 
 ---
@@ -251,9 +248,7 @@ python .\train_ml_model.py --data data/btcusdt_5m_training.csv --model-out model
 
 3) 동작 방식:
 - 기본 신호는 MA 교차(`LONG`/`SHORT`)
-- GPT 필터가 켜져 있으면 MA와 GPT가 일치해야 통과
 - ML 필터가 켜져 있으면 MA와 ML이 일치해야 통과
-- 즉, 둘 다 켜면 **MA + GPT + ML 전부 일치할 때만 진입**
 
 `.env` 저장 키:
 
