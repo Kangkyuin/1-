@@ -122,7 +122,7 @@ def parse_args() -> argparse.Namespace:
         "--move-threshold-pct",
         type=float,
         default=0.0015,
-        help="중립(0) 구간 임계값 비율 (0.0015 == 0.15%)",
+        help="중립(0) 구간 임계값 비율 (0.0015 == 0.15%%)",
     )
     parser.add_argument(
         "--output",
