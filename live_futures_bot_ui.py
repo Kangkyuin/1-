@@ -1016,7 +1016,6 @@ class FuturesBotUI:
             ("loop_seconds", "반복 주기(초)", "30"),
             ("discord_webhook_url", "디스코드 웹훅 URL", ""),
             ("openai_api_key", "OpenAI API 키", ""),
-            ("openai_model", "OpenAI 모델", "gpt-4o-mini"),
         ]
 
         row = 0
@@ -1040,6 +1039,7 @@ class FuturesBotUI:
         self.vars["discord_enabled"] = tk.BooleanVar(value=False)
         self.vars["gpt_filter_enabled"] = tk.BooleanVar(value=False)
         self.vars["margin_mode"] = tk.StringVar(value="isolated")
+        self.vars["openai_model"] = tk.StringVar(value="gpt-4o-mini")
 
         live_check = ttk.Checkbutton(
             parent,
@@ -1085,6 +1085,30 @@ class FuturesBotUI:
             variable=self.vars["gpt_filter_enabled"],
         )
         gpt_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        row += 1
+
+        ttk.Label(parent, text="GPT 모델 선택").grid(
+            row=row, column=0, sticky="w", pady=(8, 4)
+        )
+        gpt_model_frame = ttk.Frame(parent)
+        gpt_model_frame.grid(row=row, column=1, sticky="w", pady=(8, 4), padx=(8, 0))
+        self.gpt_model_buttons: dict[str, ttk.Button] = {}
+        model_presets = [
+            ("gpt-4o-mini", "4o-mini"),
+            ("gpt-4o", "4o"),
+            ("gpt-4.1-mini", "4.1-mini"),
+            ("gpt-4.1", "4.1"),
+        ]
+        for model_name, label in model_presets:
+            btn = ttk.Button(
+                gpt_model_frame,
+                text=label,
+                style="ModeOff.TButton",
+                command=lambda m=model_name: self._select_gpt_model(m),
+            )
+            btn.pack(side="left", padx=(0, 6))
+            self.gpt_model_buttons[model_name] = btn
+        self._select_gpt_model("gpt-4o-mini")
 
         parent.columnconfigure(1, weight=1)
 
@@ -1117,6 +1141,13 @@ class FuturesBotUI:
         self.vars["discord_enabled"].set(
             str(values.get("DISCORD_ENABLED", "false")).lower() in {"1", "true", "yes"}
         )
+        self.vars["openai_api_key"].set(values.get("OPENAI_API_KEY", ""))
+        self.vars["gpt_filter_enabled"].set(
+            str(values.get("OPENAI_FILTER_ENABLED", "false")).lower()
+            in {"1", "true", "yes"}
+        )
+        gpt_model = str(values.get("OPENAI_MODEL", "gpt-4o-mini")).strip()
+        self._select_gpt_model(gpt_model)
         margin_mode = str(values.get("BINANCE_MARGIN_MODE", "isolated")).strip().lower()
         if margin_mode not in {"isolated", "cross"}:
             margin_mode = "isolated"
@@ -1145,6 +1176,21 @@ class FuturesBotUI:
             self.env_path,
             "DISCORD_ENABLED",
             "true" if self.vars["discord_enabled"].get() else "false",
+        )
+        set_key(
+            self.env_path,
+            "OPENAI_API_KEY",
+            self.vars["openai_api_key"].get().strip(),
+        )
+        set_key(
+            self.env_path,
+            "OPENAI_FILTER_ENABLED",
+            "true" if self.vars["gpt_filter_enabled"].get() else "false",
+        )
+        set_key(
+            self.env_path,
+            "OPENAI_MODEL",
+            self.vars["openai_model"].get().strip() or "gpt-4o-mini",
         )
         margin_mode = "isolated"
         margin_var = self.vars.get("margin_mode")
@@ -1186,6 +1232,25 @@ class FuturesBotUI:
             self.margin_iso_btn.configure(style="ModeOff.TButton")
             self.margin_cross_btn.configure(style="ModeOn.TButton")
 
+    def _select_gpt_model(self, model: str) -> None:
+        allowed = {"gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"}
+        normalized = (model or "gpt-4o-mini").strip()
+        if normalized not in allowed:
+            normalized = "gpt-4o-mini"
+
+        model_var = self.vars.get("openai_model")
+        if not isinstance(model_var, tk.StringVar):
+            model_var = tk.StringVar(value=normalized)
+            self.vars["openai_model"] = model_var
+        model_var.set(normalized)
+
+        if not hasattr(self, "gpt_model_buttons"):
+            return
+        for model_name, btn in self.gpt_model_buttons.items():
+            btn.configure(
+                style="ModeOn.TButton" if model_name == normalized else "ModeOff.TButton"
+            )
+
     def _build_config(self) -> BotConfig:
         symbol = self.vars["symbol"].get().strip()
         if ":" not in symbol:
@@ -1213,6 +1278,9 @@ class FuturesBotUI:
             dry_run=not self.vars["live_mode"].get(),
             discord_enabled=self.vars["discord_enabled"].get(),
             discord_webhook_url=self.vars["discord_webhook_url"].get().strip(),
+            gpt_filter_enabled=self.vars["gpt_filter_enabled"].get(),
+            openai_api_key=self.vars["openai_api_key"].get().strip(),
+            openai_model=self.vars["openai_model"].get().strip() or "gpt-4o-mini",
         )
 
     def start_bot(self) -> None:
@@ -1241,6 +1309,12 @@ class FuturesBotUI:
             messagebox.showerror(
                 "디스코드 설정 오류",
                 "디스코드 알림 사용 시 웹훅 URL이 필요합니다.",
+            )
+            return
+        if config.gpt_filter_enabled and (not config.openai_api_key):
+            messagebox.showerror(
+                "GPT 설정 오류",
+                "GPT 필터 사용 시 OpenAI API 키가 필요합니다.",
             )
             return
 

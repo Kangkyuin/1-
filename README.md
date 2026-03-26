@@ -62,12 +62,18 @@ python .\live_futures_bot_ui.py
 UI에서 아래 항목 입력 후 저장:
 - 디스코드 알림 사용 (체크)
 - 디스코드 웹훅 URL
+- (선택) GPT 보조 필터 사용 시:
+  - OpenAI API 키
+  - OpenAI 모델 버튼 선택 (`gpt-4o-mini`, `gpt-4o`, `gpt-4.1-mini`)
 
 `.env`에도 자동 저장됩니다:
 
 ```env
 DISCORD_ENABLED=true
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+OPENAI_FILTER_ENABLED=false
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
 ```
 
 알림 이벤트:
