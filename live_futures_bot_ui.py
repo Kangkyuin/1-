@@ -264,6 +264,33 @@ class FuturesBotEngine:
     def _notify(self, message: str) -> None:
         self.notifier.send_async(message)
 
+    @staticmethod
+    def _is_timestamp_error(exc: Exception) -> bool:
+        text = str(exc)
+        return ("-1021" in text) or ("Timestamp for this request was" in text)
+
+    def _resync_time_difference(self) -> bool:
+        if self.exchange is None:
+            return False
+        try:
+            self.exchange.load_time_difference()
+            self.log("[시간] 서버 시간 오차를 재동기화했습니다.")
+            return True
+        except Exception as time_exc:
+            self.log(f"[시간] 재동기화 실패: {time_exc}")
+            return False
+
+    def _xcall(self, fn: Callable, *args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if self._is_timestamp_error(exc):
+                self.log("[시간] timestamp 오류(-1021) 감지, 재동기화 후 재시도합니다.")
+                if self._resync_time_difference():
+                    time.sleep(0.2)
+                    return fn(*args, **kwargs)
+            raise
+
     def _combine_signals(
         self,
         ma_signal: str,
@@ -293,29 +320,32 @@ class FuturesBotEngine:
                 "apiKey": self.config.api_key,
                 "secret": self.config.api_secret,
                 "enableRateLimit": True,
+                "timeout": 15000,
                 "options": {
                     "adjustForTimeDifference": True,
                     "recvWindow": 10000,
                 },
             }
         )
-        self.exchange.load_markets()
-        self.exchange.load_time_difference()
+        self._xcall(self.exchange.load_markets)
+        self._resync_time_difference()
 
         try:
-            self.exchange.set_margin_mode(self.config.margin_mode, self.config.symbol)
+            self._xcall(
+                self.exchange.set_margin_mode, self.config.margin_mode, self.config.symbol
+            )
             self.log(f"[설정] 마진 모드 설정: {self.config.margin_mode}")
         except Exception as exc:
             self.log(f"[설정] 마진 모드 설정 건너뜀: {exc}")
 
         try:
-            self.exchange.set_leverage(self.config.leverage, self.config.symbol)
+            self._xcall(self.exchange.set_leverage, self.config.leverage, self.config.symbol)
             self.log(f"[설정] 레버리지 설정: {self.config.leverage}x")
         except Exception as exc:
             self.log(f"[설정] 레버리지 설정 건너뜀: {exc}")
 
     def fetch_equity_usdt(self) -> float:
-        balance = self.exchange.fetch_balance()
+        balance = self._xcall(self.exchange.fetch_balance)
         usdt_total = balance.get("total", {}).get("USDT")
         if usdt_total is None:
             free = balance.get("free", {}).get("USDT", 0.0)
@@ -324,7 +354,8 @@ class FuturesBotEngine:
         return float(usdt_total or 0.0)
 
     def get_ma_signal(self) -> tuple[str, float, list[dict]]:
-        candles = self.exchange.fetch_ohlcv(
+        candles = self._xcall(
+            self.exchange.fetch_ohlcv,
             self.config.symbol,
             timeframe=self.config.timeframe,
             limit=max(self.config.long_ma + 10, 120),
@@ -384,7 +415,7 @@ class FuturesBotEngine:
 
     def get_live_price(self, fallback_price: float) -> float:
         try:
-            ticker = self.exchange.fetch_ticker(self.config.symbol)
+            ticker = self._xcall(self.exchange.fetch_ticker, self.config.symbol)
             last = ticker.get("last")
             if last is not None:
                 return float(last)
@@ -394,7 +425,7 @@ class FuturesBotEngine:
 
     def get_position(self) -> Optional[dict]:
         try:
-            positions = self.exchange.fetch_positions([self.config.symbol])
+            positions = self._xcall(self.exchange.fetch_positions, [self.config.symbol])
             if not positions:
                 return None
             p = positions[0]
@@ -410,7 +441,8 @@ class FuturesBotEngine:
     def sync_recent_trades(self) -> None:
         try:
             since_ms = self.exchange.milliseconds() - (6 * 60 * 60 * 1000)
-            trades = self.exchange.fetch_my_trades(
+            trades = self._xcall(
+                self.exchange.fetch_my_trades,
                 self.config.symbol,
                 since=since_ms,
                 limit=100,
@@ -564,10 +596,11 @@ class FuturesBotEngine:
             )
             return
 
-        self.exchange.create_order(self.config.symbol, "market", entry_side, amount)
+        self._xcall(self.exchange.create_order, self.config.symbol, "market", entry_side, amount)
         close_side = "sell" if entry_side == "buy" else "buy"
 
-        self.exchange.create_order(
+        self._xcall(
+            self.exchange.create_order,
             self.config.symbol,
             "STOP_MARKET",
             close_side,
@@ -581,7 +614,8 @@ class FuturesBotEngine:
                 "workingType": "MARK_PRICE",
             },
         )
-        self.exchange.create_order(
+        self._xcall(
+            self.exchange.create_order,
             self.config.symbol,
             "TAKE_PROFIT_MARKET",
             close_side,
@@ -699,12 +733,8 @@ class FuturesBotEngine:
                 text = str(exc)
                 self.log(f"[오류] {text}")
                 self._notify(f"[오류]\n{self.config.symbol}\n{text}")
-                if "1021" in text:
-                    try:
-                        self.exchange.load_time_difference()
-                        self.log("[시간] 서버 시간 오차를 재동기화했습니다.")
-                    except Exception as time_exc:
-                        self.log(f"[시간] 재동기화 실패: {time_exc}")
+                if self._is_timestamp_error(exc):
+                    self._resync_time_difference()
 
             for _ in range(self.config.loop_seconds):
                 if self.stop_event.is_set():
@@ -720,7 +750,7 @@ class FuturesBotEngine:
                 if self.exchange is None:
                     time.sleep(1)
                     continue
-                ticker = self.exchange.fetch_ticker(self.config.symbol)
+                ticker = self._xcall(self.exchange.fetch_ticker, self.config.symbol)
                 last = ticker.get("last")
                 if last is not None:
                     self.state_cb({"live_price": float(last)})
