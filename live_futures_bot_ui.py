@@ -3,6 +3,7 @@ import queue
 import sys
 import threading
 import time
+import json
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -35,6 +36,9 @@ class BotConfig:
     dry_run: bool
     discord_enabled: bool
     discord_webhook_url: str
+    gpt_filter_enabled: bool
+    openai_api_key: str
+    openai_model: str
 
 
 class DiscordNotifier:
@@ -67,6 +71,57 @@ class DiscordNotifier:
             pass
 
 
+class GptSignalFilter:
+    def __init__(self, enabled: bool, api_key: str, model: str):
+        self.enabled = enabled and bool(api_key.strip())
+        self.api_key = api_key.strip()
+        self.model = (model or "gpt-4o-mini").strip()
+
+    def request_signal(self, prompt: str) -> tuple[str, str]:
+        if not self.enabled:
+            return "HOLD", "disabled"
+
+        url = "https://api.openai.com/v1/chat/completions"
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "max_tokens": 12,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict trading risk filter. "
+                        "Return exactly one token: LONG, SHORT, or HOLD."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        }
+        body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            content = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+                .upper()
+            )
+            token = content.split()[0] if content else ""
+            if token in {"LONG", "SHORT", "HOLD"}:
+                return token, "ok"
+            return "HOLD", "invalid_response"
+        except Exception as exc:
+            return "HOLD", f"error:{exc}"
+
+
 class FuturesBotEngine:
     def __init__(
         self,
@@ -84,6 +139,11 @@ class FuturesBotEngine:
         self.notifier = DiscordNotifier(
             enabled=config.discord_enabled,
             webhook_url=config.discord_webhook_url,
+        )
+        self.gpt_filter = GptSignalFilter(
+            enabled=config.gpt_filter_enabled,
+            api_key=config.openai_api_key,
+            model=config.openai_model,
         )
         self.exchange = None
         self.initial_equity: Optional[float] = None
@@ -107,6 +167,40 @@ class FuturesBotEngine:
 
     def _notify(self, message: str) -> None:
         self.notifier.send_async(message)
+
+    def _build_gpt_prompt(self, ma_signal: str, live_price: float, chart_points: list[dict]) -> str:
+        if not chart_points:
+            return (
+                f"symbol={self.config.symbol}\n"
+                f"timeframe={self.config.timeframe}\n"
+                f"ma_signal={ma_signal}\n"
+                f"price={live_price:.2f}\n"
+                "Return LONG, SHORT, or HOLD."
+            )
+        closes = [p.get("close") for p in chart_points[-6:] if p.get("close") is not None]
+        rsis = [p.get("rsi") for p in chart_points[-6:] if p.get("rsi") is not None]
+        close_text = ",".join(f"{float(v):.2f}" for v in closes[-5:]) if closes else "-"
+        rsi_text = ",".join(f"{float(v):.2f}" for v in rsis[-3:]) if rsis else "-"
+        return (
+            f"symbol={self.config.symbol}\n"
+            f"timeframe={self.config.timeframe}\n"
+            f"ma_signal={ma_signal}\n"
+            f"live_price={live_price:.2f}\n"
+            f"recent_closes={close_text}\n"
+            f"recent_rsi={rsi_text}\n"
+            "Return only one token: LONG, SHORT, or HOLD."
+        )
+
+    def _combine_signals(self, ma_signal: str, gpt_signal: str) -> tuple[str, str]:
+        if not self.config.gpt_filter_enabled:
+            return ma_signal, "gpt_off"
+        if ma_signal not in {"LONG", "SHORT"}:
+            return "HOLD", "ma_hold"
+        if gpt_signal not in {"LONG", "SHORT", "HOLD"}:
+            return "HOLD", "gpt_invalid"
+        if gpt_signal == ma_signal:
+            return ma_signal, "agree"
+        return "HOLD", "disagree_or_hold"
 
     def setup_exchange(self) -> None:
         self.exchange = ccxt.binanceusdm(
@@ -476,6 +570,14 @@ class FuturesBotEngine:
                     )
                 self.last_position_snapshot = position
 
+                gpt_signal = "HOLD"
+                gpt_reason = "disabled"
+                if self.config.gpt_filter_enabled:
+                    prompt = self._build_gpt_prompt(signal, live_price, chart_points)
+                    gpt_signal, gpt_reason = self.gpt_filter.request_signal(prompt)
+
+                effective_signal, signal_reason = self._combine_signals(signal, gpt_signal)
+
                 self.state_cb(
                     {
                         "price": f"{live_price:.2f}",
@@ -484,15 +586,20 @@ class FuturesBotEngine:
                             if position is None
                             else f"{self._side_ko(position['side'])} ({position['contracts']})"
                         ),
-                        "signal": self._signal_ko(signal),
+                        "signal": self._signal_ko(effective_signal),
+                        "ma_signal": self._signal_ko(signal),
+                        "gpt_signal": self._signal_ko(gpt_signal),
                         "chart": chart_points,
                         "live_price": live_price,
                     }
                 )
 
-                self.log(f"[신호] 최종={signal} 포지션={position}")
-                if position is None and signal in {"LONG", "SHORT"}:
-                    self.place_entry_with_brackets(signal, live_price)
+                self.log(
+                    f"[신호] ma={signal} gpt={gpt_signal} -> 최종={effective_signal} "
+                    f"reason={signal_reason}/{gpt_reason} 포지션={position}"
+                )
+                if position is None and effective_signal in {"LONG", "SHORT"}:
+                    self.place_entry_with_brackets(effective_signal, live_price)
 
             except Exception as exc:
                 text = str(exc)
@@ -908,6 +1015,8 @@ class FuturesBotUI:
             ("max_daily_loss_pct", "일일 최대손실 비율", "0.01"),
             ("loop_seconds", "반복 주기(초)", "30"),
             ("discord_webhook_url", "디스코드 웹훅 URL", ""),
+            ("openai_api_key", "OpenAI API 키", ""),
+            ("openai_model", "OpenAI 모델", "gpt-4o-mini"),
         ]
 
         row = 0
@@ -915,19 +1024,21 @@ class FuturesBotUI:
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
             var = tk.StringVar(value=value)
             self.vars[key] = var
-            show = "*" if key in {"api_secret"} else None
+            show = "*" if key in {"api_secret", "openai_api_key"} else None
             entry = ttk.Entry(parent, textvariable=var, width=36, show=show)
             entry.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 0))
             if key in {
                 "api_key",
                 "api_secret",
                 "discord_webhook_url",
+                "openai_api_key",
             }:
                 entry.bind("<FocusOut>", self._on_credential_focus_out)
             row += 1
 
         self.vars["live_mode"] = tk.BooleanVar(value=False)
         self.vars["discord_enabled"] = tk.BooleanVar(value=False)
+        self.vars["gpt_filter_enabled"] = tk.BooleanVar(value=False)
         self.vars["margin_mode"] = tk.StringVar(value="isolated")
 
         live_check = ttk.Checkbutton(
@@ -966,6 +1077,14 @@ class FuturesBotUI:
             variable=self.vars["discord_enabled"],
         )
         discord_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        row += 1
+
+        gpt_check = ttk.Checkbutton(
+            parent,
+            text="GPT 보조시그널 필터 사용 (MA와 GPT가 일치할 때만 진입)",
+            variable=self.vars["gpt_filter_enabled"],
+        )
+        gpt_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         parent.columnconfigure(1, weight=1)
 

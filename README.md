@@ -16,6 +16,7 @@
 - API 키 자동 저장/자동 불러오기
 - 체결내역 테이블 (실시간 업데이트)
 - 디스코드 웹훅 알림 (진입/청산/오류/리스크)
+- GPT 보조 시그널 필터 (선택)
 - 차트 고급화:
   - 캔들(OHLC) + 단기/장기 MA
   - 거래량(Volume) 패널
@@ -83,6 +84,9 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 - LONG: 단기 MA가 장기 MA를 상향 돌파
 - SHORT: 단기 MA가 장기 MA를 하향 돌파
 - 포지션이 없을 때만 신규 진입
+- GPT 필터를 켜면:
+  - MA 신호와 GPT 신호가 **같을 때만** 진입
+  - 불일치 또는 GPT 오류 시 `HOLD`
 - 진입 시:
   - `STOP_MARKET` + `reduceOnly` 손절
   - `TAKE_PROFIT_MARKET` + `reduceOnly` 익절
@@ -102,6 +106,23 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
 참고:
 - 거래량/RSI는 차트 표시용 정보이며 현재 매매 신호는 MA 교차를 사용합니다.
+
+---
+
+## 6-2) GPT 보조 필터 설정 (선택)
+
+UI에서 아래 항목 입력:
+- `GPT 필터 사용 (MA 신호와 동일할 때만 진입)`
+- `OpenAI API Key`
+- `OpenAI 모델` (기본: `gpt-4o-mini`)
+
+`.env` 저장 키:
+
+```env
+OPENAI_FILTER_ENABLED=true
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+```
 
 ---
 
