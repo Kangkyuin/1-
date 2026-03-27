@@ -3,7 +3,7 @@ import queue
 import sys
 import threading
 import time
-import urllib.parse
+import json
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -72,16 +72,18 @@ class DiscordNotifier:
     def _send_sync(self, message: str) -> None:
         try:
             url = self.webhook_url
-            payload = urllib.parse.urlencode(
-                {
-                    "content": message,
-                }
-            ).encode("utf-8")
-            req = urllib.request.Request(url, data=payload, method="POST")
+            payload = json.dumps({"content": message}).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
             with urllib.request.urlopen(req, timeout=10):
                 pass
-        except Exception:
-            pass
+        except Exception as exc:
+            # 알림 실패 원인을 최소한 stdout에 남겨 디버깅 가능하게 함.
+            print(f"[디스코드] 전송 실패: {exc}")
 
 
 class MlSignalFilter:
