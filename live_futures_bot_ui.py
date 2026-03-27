@@ -605,6 +605,9 @@ class FuturesBotEngine:
             return None
 
     def sync_recent_trades(self) -> None:
+        if self.config.dry_run:
+            # 모의 실행에서는 거래소 실체결 대신 내부 모의 체결 이벤트를 사용한다.
+            return
         try:
             since_ms = self.exchange.milliseconds() - (6 * 60 * 60 * 1000)
             trades = self._xcall(
@@ -752,13 +755,17 @@ class FuturesBotEngine:
             self.trade_cb(
                 {
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "event": "진입",
+                    "event": "모의체결",
                     "side": side_ko,
                     "amount": f"{amount}",
                     "price": f"{entry_price:.2f}",
-                    "status": "DRY_RUN",
-                    "note": "실주문 미전송",
+                    "status": "완료",
+                    "note": "가상 주문 체결(실주문 미전송)",
                 }
+            )
+            self._notify(
+                f"[모의체결]\n{self.config.symbol}\n방향: {side_ko}\n수량: {amount}\n"
+                f"체결가: {entry_price:.2f}"
             )
             return
 
