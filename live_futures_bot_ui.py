@@ -1317,10 +1317,10 @@ class FuturesBotUI:
             ("short_ma", "단기 MA", "7"),
             ("long_ma", "장기 MA", "25"),
             ("leverage", "레버리지", "2"),
-            ("risk_per_trade", "1회 리스크(비율)", "0.003"),
-            ("stop_loss_pct", "손절 비율", "0.007"),
-            ("take_profit_pct", "익절 비율", "0.014"),
-            ("max_daily_loss_pct", "일일 최대손실 비율", "0.01"),
+            ("risk_per_trade", "1회 리스크(%)", "0.30"),
+            ("stop_loss_pct", "손절 비율(%)", "0.70"),
+            ("take_profit_pct", "익절 비율(%)", "1.40"),
+            ("max_daily_loss_pct", "일일 최대손실(%)", "1.00"),
             ("loop_seconds", "반복 주기(초)", "30"),
             ("discord_webhook_url", "디스코드 웹훅 URL", ""),
             ("ml_model_path", "ML 모델 경로(.pkl)", "models/btc_signal_model.pkl"),
@@ -1443,6 +1443,37 @@ class FuturesBotUI:
             )
         parent.columnconfigure(1, weight=1)
 
+    @staticmethod
+    def _ratio_to_ui_percent_text(raw_value: object, default_percent: float) -> str:
+        """
+        Env에는 비율(0.01)을 저장하고 UI에는 퍼센트(1.00)로 표시.
+        기존 사용자가 env에 퍼센트(1 또는 1.5)를 넣은 경우도 최대한 호환한다.
+        """
+        try:
+            v = float(str(raw_value).strip())
+        except Exception:
+            return f"{default_percent:.2f}"
+        if v < 0:
+            v = 0.0
+        if v <= 1.0:
+            return f"{(v * 100.0):.2f}"
+        return f"{v:.2f}"
+
+    @staticmethod
+    def _ui_percent_text_to_ratio(text_value: str, field_name: str) -> float:
+        txt = (text_value or "").strip()
+        if not txt:
+            raise ValueError(f"{field_name} 값을 입력하세요.")
+        try:
+            v = float(txt)
+        except Exception:
+            raise ValueError(f"{field_name} 값은 숫자여야 합니다.")
+        if v < 0:
+            raise ValueError(f"{field_name} 값은 0 이상이어야 합니다.")
+        if v > 100:
+            raise ValueError(f"{field_name} 값은 100 이하여야 합니다.")
+        return v / 100.0
+
     def _load_env_to_form(self) -> None:
         values = dotenv_values(self.env_path)
         self.vars["api_key"].set(values.get("BINANCE_API_KEY", ""))
@@ -1452,11 +1483,17 @@ class FuturesBotUI:
         self.vars["short_ma"].set(values.get("BOT_SHORT_MA", "7"))
         self.vars["long_ma"].set(values.get("BOT_LONG_MA", "25"))
         self.vars["leverage"].set(values.get("BOT_LEVERAGE", "2"))
-        self.vars["risk_per_trade"].set(values.get("BOT_RISK_PER_TRADE", "0.003"))
-        self.vars["stop_loss_pct"].set(values.get("BOT_STOP_LOSS_PCT", "0.007"))
-        self.vars["take_profit_pct"].set(values.get("BOT_TAKE_PROFIT_PCT", "0.014"))
+        self.vars["risk_per_trade"].set(
+            self._ratio_to_ui_percent_text(values.get("BOT_RISK_PER_TRADE", "0.003"), 0.30)
+        )
+        self.vars["stop_loss_pct"].set(
+            self._ratio_to_ui_percent_text(values.get("BOT_STOP_LOSS_PCT", "0.007"), 0.70)
+        )
+        self.vars["take_profit_pct"].set(
+            self._ratio_to_ui_percent_text(values.get("BOT_TAKE_PROFIT_PCT", "0.014"), 1.40)
+        )
         self.vars["max_daily_loss_pct"].set(
-            values.get("BOT_MAX_DAILY_LOSS_PCT", "0.01")
+            self._ratio_to_ui_percent_text(values.get("BOT_MAX_DAILY_LOSS_PCT", "0.01"), 1.00)
         )
         self.vars["loop_seconds"].set(values.get("BOT_LOOP_SECONDS", "30"))
         self.vars["discord_webhook_url"].set(values.get("DISCORD_WEBHOOK_URL", ""))
@@ -1498,6 +1535,23 @@ class FuturesBotUI:
             if show_popup:
                 messagebox.showerror("API 누락", "API 키와 시크릿을 모두 입력하세요.")
             return False
+        try:
+            risk_ratio = self._ui_percent_text_to_ratio(
+                self.vars["risk_per_trade"].get(), "1회 리스크(%)"
+            )
+            sl_ratio = self._ui_percent_text_to_ratio(
+                self.vars["stop_loss_pct"].get(), "손절 비율(%)"
+            )
+            tp_ratio = self._ui_percent_text_to_ratio(
+                self.vars["take_profit_pct"].get(), "익절 비율(%)"
+            )
+            max_loss_ratio = self._ui_percent_text_to_ratio(
+                self.vars["max_daily_loss_pct"].get(), "일일 최대손실(%)"
+            )
+        except ValueError as exc:
+            if show_popup:
+                messagebox.showerror("설정 오류", str(exc))
+            return False
 
         if not os.path.exists(self.env_path):
             with open(self.env_path, "a", encoding="utf-8"):
@@ -1513,22 +1567,22 @@ class FuturesBotUI:
         set_key(
             self.env_path,
             "BOT_RISK_PER_TRADE",
-            self.vars["risk_per_trade"].get().strip(),
+            f"{risk_ratio:.8f}",
         )
         set_key(
             self.env_path,
             "BOT_STOP_LOSS_PCT",
-            self.vars["stop_loss_pct"].get().strip(),
+            f"{sl_ratio:.8f}",
         )
         set_key(
             self.env_path,
             "BOT_TAKE_PROFIT_PCT",
-            self.vars["take_profit_pct"].get().strip(),
+            f"{tp_ratio:.8f}",
         )
         set_key(
             self.env_path,
             "BOT_MAX_DAILY_LOSS_PCT",
-            self.vars["max_daily_loss_pct"].get().strip(),
+            f"{max_loss_ratio:.8f}",
         )
         set_key(
             self.env_path,
@@ -1662,6 +1716,18 @@ class FuturesBotUI:
             value = margin_var.get().strip().lower()
             if value in {"isolated", "cross"}:
                 margin_mode = value
+        risk_ratio = self._ui_percent_text_to_ratio(
+            self.vars["risk_per_trade"].get(), "1회 리스크(%)"
+        )
+        sl_ratio = self._ui_percent_text_to_ratio(
+            self.vars["stop_loss_pct"].get(), "손절 비율(%)"
+        )
+        tp_ratio = self._ui_percent_text_to_ratio(
+            self.vars["take_profit_pct"].get(), "익절 비율(%)"
+        )
+        max_loss_ratio = self._ui_percent_text_to_ratio(
+            self.vars["max_daily_loss_pct"].get(), "일일 최대손실(%)"
+        )
         return BotConfig(
             api_key=self.vars["api_key"].get().strip(),
             api_secret=self.vars["api_secret"].get().strip(),
@@ -1671,10 +1737,10 @@ class FuturesBotUI:
             long_ma=int(self.vars["long_ma"].get().strip()),
             leverage=int(self.vars["leverage"].get().strip()),
             margin_mode=margin_mode,
-            risk_per_trade=float(self.vars["risk_per_trade"].get().strip()),
-            stop_loss_pct=float(self.vars["stop_loss_pct"].get().strip()),
-            take_profit_pct=float(self.vars["take_profit_pct"].get().strip()),
-            max_daily_loss_pct=float(self.vars["max_daily_loss_pct"].get().strip()),
+            risk_per_trade=risk_ratio,
+            stop_loss_pct=sl_ratio,
+            take_profit_pct=tp_ratio,
+            max_daily_loss_pct=max_loss_ratio,
             loop_seconds=int(self.vars["loop_seconds"].get().strip()),
             dry_run=not self.vars["live_mode"].get(),
             discord_enabled=self.vars["discord_enabled"].get(),

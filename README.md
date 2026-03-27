@@ -106,6 +106,10 @@ ML_MIN_CONFIDENCE=0.40
   - `STOP_MARKET` + `reduceOnly` 손절
   - `TAKE_PROFIT_MARKET` + `reduceOnly` 익절
 - 일일 손실 한도(`max_daily_loss_pct`) 도달 시 봇 중지
+- UI 입력은 `%` 단위이며 내부에서는 비율로 변환해 사용
+  - 예: 리스크 `0.30` 입력 -> 내부값 `0.003`
+  - 예: 손절 `0.70` 입력 -> 내부값 `0.007`
+  - 예: 일일 최대손실 `1.00` 입력 -> 내부값 `0.01`
 
 ---
 
