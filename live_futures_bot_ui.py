@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import json
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -57,7 +58,8 @@ class BotConfig:
 class DiscordNotifier:
     def __init__(self, enabled: bool, webhook_url: str):
         self.enabled = enabled and bool(webhook_url)
-        self.webhook_url = webhook_url.strip()
+        cleaned = webhook_url.strip().strip("'").strip('"')
+        self.webhook_url = cleaned
 
     def send_async(self, message: str) -> None:
         if not self.enabled:
@@ -72,15 +74,34 @@ class DiscordNotifier:
     def _send_sync(self, message: str) -> None:
         try:
             url = self.webhook_url
+            if not url.startswith("https://discord.com/api/webhooks/"):
+                print(f"[디스코드] 웹훅 URL 형식 오류: {url[:60]}...")
+                return
             payload = json.dumps({"content": message}).encode("utf-8")
             req = urllib.request.Request(
                 url,
                 data=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "BinanceFuturesBot/1.0",
+                },
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=10):
                 pass
+        except urllib.error.HTTPError as http_exc:
+            body = ""
+            try:
+                body = http_exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                body = ""
+            print(
+                f"[디스코드] 전송 실패: HTTP {http_exc.code} {http_exc.reason} body={body}"
+            )
+            if http_exc.code == 403:
+                print(
+                    "[디스코드] 403은 웹훅 URL 만료/삭제 또는 채널 권한 문제일 가능성이 큽니다."
+                )
         except Exception as exc:
             # 알림 실패 원인을 최소한 stdout에 남겨 디버깅 가능하게 함.
             print(f"[디스코드] 전송 실패: {exc}")
