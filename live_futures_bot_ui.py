@@ -292,6 +292,7 @@ class FuturesBotEngine:
         self.daily_date = None
         self.seen_trade_ids: set[str] = set()
         self.last_position_snapshot: Optional[dict] = None
+        self.last_entry_marker: Optional[str] = None
         self.auto_train_thread: Optional[threading.Thread] = None
 
     @staticmethod
@@ -519,7 +520,7 @@ class FuturesBotEngine:
             usdt_total = free + used
         return float(usdt_total or 0.0)
 
-    def get_ma_signal(self) -> tuple[str, float, list[dict]]:
+    def get_ma_signal(self) -> tuple[str, float, list[dict], Optional[int]]:
         candles = self._xcall(
             self.exchange.fetch_ohlcv,
             self.config.symbol,
@@ -541,10 +542,11 @@ class FuturesBotEngine:
         # Signal uses closed candles only.
         closed_df = df.iloc[:-1].copy()
         if len(closed_df) < 2:
-            return "HOLD", float(df["close"].iloc[-1]), []
+            return "HOLD", float(df["close"].iloc[-1]), [], None
         prev_diff = closed_df["short"].iloc[-2] - closed_df["long"].iloc[-2]
         curr_diff = closed_df["short"].iloc[-1] - closed_df["long"].iloc[-1]
         close_price = float(closed_df["close"].iloc[-1])
+        signal_candle_ts = int(closed_df["ts"].iloc[-1])
 
         self.log(
             f"[MA] close={close_price:.2f} prev_diff={prev_diff:.4f} "
@@ -572,12 +574,12 @@ class FuturesBotEngine:
             )
 
         if pd.isna(prev_diff) or pd.isna(curr_diff):
-            return "HOLD", close_price, chart_points
+            return "HOLD", close_price, chart_points, signal_candle_ts
         if prev_diff <= 0 and curr_diff > 0:
-            return "LONG", close_price, chart_points
+            return "LONG", close_price, chart_points, signal_candle_ts
         if prev_diff >= 0 and curr_diff < 0:
-            return "SHORT", close_price, chart_points
-        return "HOLD", close_price, chart_points
+            return "SHORT", close_price, chart_points, signal_candle_ts
+        return "HOLD", close_price, chart_points, signal_candle_ts
 
     def get_live_price(self, fallback_price: float) -> float:
         try:
@@ -856,7 +858,7 @@ class FuturesBotEngine:
                 if not self.risk_guard():
                     break
 
-                signal, closed_price, chart_points = self.get_ma_signal()
+                signal, closed_price, chart_points, signal_candle_ts = self.get_ma_signal()
                 live_price = self.get_live_price(closed_price)
                 position = self.get_position()
                 self.sync_recent_trades()
@@ -910,7 +912,19 @@ class FuturesBotEngine:
                     f"reason={signal_reason}/{ml_reason} 포지션={position}"
                 )
                 if position is None and effective_signal in {"LONG", "SHORT"}:
-                    self.place_entry_with_brackets(effective_signal, live_price)
+                    marker = (
+                        f"{effective_signal}:{signal_candle_ts}"
+                        if signal_candle_ts is not None
+                        else None
+                    )
+                    if marker and marker == self.last_entry_marker:
+                        self.log(
+                            "[주문] 동일 신호 중복 방지: 같은 마감 캔들은 1회만 진입합니다."
+                        )
+                    else:
+                        self.place_entry_with_brackets(effective_signal, live_price)
+                        if marker:
+                            self.last_entry_marker = marker
 
             except Exception as exc:
                 text = str(exc)
