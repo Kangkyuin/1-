@@ -1,74 +1,65 @@
+<h2>폼에 입력한 성적 저장하기</h2><hr>
 <?php
-$db_con = mysqli_connect("localhost", "test", "test1234", "testdb");
-if (!$db_con) {
-    exit("DB 연결 실패");
-}
+$db_con = mysqli_connect("localhost", "test", "test1234", "school");
+if (!$db_con) exit("DB 연결 실패");
 
 $create_sql = "CREATE TABLE IF NOT EXISTS sungjuk (
 id INT AUTO_INCREMENT PRIMARY KEY,
-hakbun VARCHAR(20) NOT NULL,
-attendance INT NOT NULL,
-assignment_score INT NOT NULL,
-midterm_score INT NOT NULL,
-final_score INT NOT NULL,
-total_score INT NOT NULL,
-average_score DOUBLE(5,2) NOT NULL,
-grade VARCHAR(2) NOT NULL,
-created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+student_id VARCHAR(20) NOT NULL,
+att INT NOT NULL,
+hw INT NOT NULL,
+mid INT NOT NULL,
+final INT NOT NULL,
+total INT NOT NULL,
+grade VARCHAR(2) NOT NULL
 )";
 mysqli_query($db_con, $create_sql);
 
-if (!isset($_POST["hakbun"])) {
+if (!isset($_POST["student_id"])) {
 ?>
-<h2>성적 입력하고 계산 + 저장하기</h2><hr>
 <form method="post" action="sungjuk_proc.php">
-학번 : <input type="text" name="hakbun" size="20"><br><br>
-출석 : <input type="number" name="attendance" min="0" max="100"><br><br>
-과제 : <input type="number" name="assignment" min="0" max="100"><br><br>
-중간 : <input type="number" name="midterm" min="0" max="100"><br><br>
-기말 : <input type="number" name="final" min="0" max="100"><br><br>
+학번 : <input type="text" name="student_id"><br><br>
+출석 : <input type="number" name="att"><br><br>
+과제 : <input type="number" name="hw"><br><br>
+중간 : <input type="number" name="mid"><br><br>
+기말 : <input type="number" name="final"><br><br>
 <input type="submit" value="계산 후 저장">
 </form>
-<p><a href="sungjuk_list.php">sungjuk 목록 보기</a></p>
+<br>
+<a href="sungjuk_list.php"><button type="button">성적 리스트 보기</button></a>
 <?php
     mysqli_close($db_con);
     exit;
 }
 
-$hakbun = $_POST["hakbun"];
-$attendance = (int)$_POST["attendance"];
-$assignment = (int)$_POST["assignment"];
-$midterm = (int)$_POST["midterm"];
+$student_id = $_POST["student_id"];
+$att = (int)$_POST["att"];
+$hw = (int)$_POST["hw"];
+$mid = (int)$_POST["mid"];
 $final = (int)$_POST["final"];
 
-$total = $attendance + $assignment + $midterm + $final;
-$avg = $total / 4;
-
-if ($avg >= 90) $grade = "A";
-else if ($avg >= 80) $grade = "B";
-else if ($avg >= 70) $grade = "C";
-else if ($avg >= 60) $grade = "D";
+$total = $att + $hw + $mid + $final;
+if ($total >= 90) $grade = "A";
+else if ($total >= 80) $grade = "B";
+else if ($total >= 70) $grade = "C";
+else if ($total >= 60) $grade = "D";
 else $grade = "F";
 
-$sql = "INSERT INTO sungjuk (hakbun, attendance, assignment_score, midterm_score, final_score, total_score, average_score, grade)
-VALUES ('$hakbun', $attendance, $assignment, $midterm, $final, $total, $avg, '$grade')";
-$result = mysqli_query($db_con, $sql);
-?>
-<h2>입력한 성적 계산 결과</h2><hr>
-<?php
-echo "<p>학번 : " . $hakbun;
-echo "<p>출석 : " . $attendance;
-echo "<p>과제 : " . $assignment;
-echo "<p>중간 : " . $midterm;
-echo "<p>기말 : " . $final;
-echo "<p>합계 : " . $total;
-echo "<p>평균 : " . round($avg, 2);
-echo "<p>평점 : " . $grade;
-echo "<hr>";
+$sql = "INSERT INTO sungjuk (student_id, att, hw, mid, final, total, grade) VALUES (?, ?, ?, ?, ?, ?, ?)";
+$stmt = $db_con->prepare($sql);
+$stmt->bind_param("siiiiis", $student_id, $att, $hw, $mid, $final, $total, $grade);
+$stmt->execute();
 
-if ($result) echo "<p>saving procedure is ok";
-else echo "<p>saving procedure is fail";
+echo "<p>학번 : " . $student_id;
+echo "<p>합계 : " . $total;
+echo "<p>평점 : " . $grade . "<hr>";
+if ($stmt->affected_rows) echo "<p>성적 저장 성공 (OK)";
+else echo "<p>성적 저장 실패 (Fail)";
 ?>
-<p><a href="sungjuk_proc.php">다시 입력하기</a></p>
-<p><a href="sungjuk_list.php">sungjuk 목록 보기</a></p>
-<?php mysqli_close($db_con); ?>
+<br>
+<a href="sungjuk_list.php"><button type="button">성적 리스트 보기</button></a>
+<a href="sungjuk_proc.php"><button type="button">다시 입력</button></a>
+<?php
+$stmt->close();
+mysqli_close($db_con);
+?>

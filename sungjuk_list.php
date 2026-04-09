@@ -1,48 +1,56 @@
-<h2>sungjuk 테이블 목록 보여주기</h2>
+<h2>SungJuk 테이블 목록 보여주기</h2>
+<hr>
 <?php
-$db_con = mysqli_connect("localhost", "test", "test1234", "testdb");
-
+$db_con = mysqli_connect("localhost", "test", "test1234", "school");
 if (!$db_con) {
-    echo "<p>DB 연결 실패</p>";
-    exit;
+    exit("<p>DB 연결 실패</p>");
 }
 
-$create_sql = "create table if not exists sungjuk (
-id int auto_increment primary key,
-hakbun varchar(20),
-attendance int,
-assignment_score int,
-midterm_score int,
-final_score int,
-total_score int,
-average_score float,
-grade varchar(2),
-created_at datetime default current_timestamp
+$create_sql = "CREATE TABLE IF NOT EXISTS sungjuk (
+id INT AUTO_INCREMENT PRIMARY KEY,
+student_id VARCHAR(20) NOT NULL,
+att INT NOT NULL,
+hw INT NOT NULL,
+mid INT NOT NULL,
+final INT NOT NULL,
+total INT NOT NULL,
+grade VARCHAR(2) NOT NULL
 )";
 mysqli_query($db_con, $create_sql);
 
-$sql = "select * from sungjuk order by id desc";
+$sql = "SELECT * FROM sungjuk ORDER BY id DESC";
 $result = mysqli_query($db_con, $sql);
-
-echo "<table border=1 cellpadding=8 cellspacing=0>";
-echo "<tr><th>ID</th><th>학번</th><th>출석</th><th>과제</th><th>중간</th><th>기말</th><th>합계</th><th>평균</th><th>평점</th><th>저장일시</th></tr>";
-
-while ($row = mysqli_fetch_assoc($result)) {
-    echo "<tr>";
-    echo "<td>".$row["id"]."</td>";
-    echo "<td>".$row["hakbun"]."</td>";
-    echo "<td>".$row["attendance"]."</td>";
-    echo "<td>".$row["assignment_score"]."</td>";
-    echo "<td>".$row["midterm_score"]."</td>";
-    echo "<td>".$row["final_score"]."</td>";
-    echo "<td>".$row["total_score"]."</td>";
-    echo "<td>".$row["average_score"]."</td>";
-    echo "<td>".$row["grade"]."</td>";
-    echo "<td>".$row["created_at"]."</td>";
-    echo "</tr>";
+if (!$result) {
+    exit("<p>조회 실패: " . mysqli_error($db_con) . "</p>");
 }
 
+echo "<table border='1'>
+        <tr>
+            <th>ID</th>
+            <th>학번</th>
+            <th>출석</th>
+            <th>과제</th>
+            <th>중간</th>
+            <th>기말</th>
+            <th>합계</th>
+            <th>평점</th>
+        </tr>";
+
+while($row = mysqli_fetch_assoc($result)) {
+    echo "<tr>";
+    echo "<td>" . $row['id'] . "</td>";
+    echo "<td>" . $row['student_id'] . "</td>";
+    echo "<td>" . $row['att'] . "</td>";
+    echo "<td>" . $row['hw'] . "</td>";
+    echo "<td>" . $row['mid'] . "</td>";
+    echo "<td>" . $row['final'] . "</td>";
+    echo "<td>" . $row['total'] . "</td>";
+    echo "<td>" . $row['grade'] . "</td>";
+    echo "</tr>";
+}
 echo "</table>";
+
 mysqli_close($db_con);
 ?>
-<p><a href="sungjuk_proc.php">성적 입력하러 가기</a></p>
+<br>
+<a href="sungjuk_proc.php">성적 입력하러 가기</a>
