@@ -186,10 +186,18 @@ def get_client() -> Client:
     return Client(api_key, api_secret)
 
 
-@st.cache_data(ttl=8, show_spinner=False)
-def fetch_futures_klines(symbol: str, interval: str, limit: int = 300) -> pd.DataFrame:
+@st.cache_data(ttl=1, show_spinner=False)
+def fetch_futures_klines(
+    symbol: str,
+    interval: str,
+    limit: int = 500,
+    price_source: str = "LAST",
+) -> pd.DataFrame:
     client = get_client()
-    raw = client.futures_klines(symbol=symbol.upper(), interval=interval, limit=limit)
+    if price_source == "MARK":
+        raw = client.futures_mark_price_klines(symbol=symbol.upper(), interval=interval, limit=limit)
+    else:
+        raw = client.futures_klines(symbol=symbol.upper(), interval=interval, limit=limit)
     df = pd.DataFrame(
         raw,
         columns=[
@@ -213,12 +221,12 @@ def fetch_futures_klines(symbol: str, interval: str, limit: int = 300) -> pd.Dat
     return df
 
 
-@st.cache_data(ttl=8, show_spinner=False)
-def fetch_multi_timeframes(symbol: str) -> dict[str, pd.DataFrame]:
+@st.cache_data(ttl=1, show_spinner=False)
+def fetch_multi_timeframes(symbol: str, price_source: str) -> dict[str, pd.DataFrame]:
     return {
-        "5m": fetch_futures_klines(symbol=symbol, interval="5m", limit=350),
-        "15m": fetch_futures_klines(symbol=symbol, interval="15m", limit=350),
-        "1h": fetch_futures_klines(symbol=symbol, interval="1h", limit=350),
+        "5m": fetch_futures_klines(symbol=symbol, interval="5m", limit=500, price_source=price_source),
+        "15m": fetch_futures_klines(symbol=symbol, interval="15m", limit=500, price_source=price_source),
+        "1h": fetch_futures_klines(symbol=symbol, interval="1h", limit=500, price_source=price_source),
     }
 
 
@@ -529,11 +537,20 @@ def resolve_primary_pattern(patterns: list[PatternSignal]) -> tuple[list[Pattern
     return [primary], f"채택: {primary.name} ({bias_to_korean(primary.bias)})"
 
 
-def collect_pattern_map(symbol: str, intervals: list[str]) -> tuple[dict[str, list[PatternSignal]], dict[str, str]]:
+def collect_pattern_map(
+    symbol: str,
+    intervals: list[str],
+    price_source: str,
+) -> tuple[dict[str, list[PatternSignal]], dict[str, str]]:
     pattern_map: dict[str, list[PatternSignal]] = {}
     pattern_note_map: dict[str, str] = {}
     for tf in intervals:
-        tf_candles = fetch_futures_klines(symbol=symbol, interval=tf, limit=350)
+        tf_candles = fetch_futures_klines(
+            symbol=symbol,
+            interval=tf,
+            limit=500,
+            price_source=price_source,
+        )
         resolved_patterns, note = resolve_primary_pattern(detect_chart_patterns(tf_candles))
         pattern_map[tf] = resolved_patterns
         pattern_note_map[tf] = note
@@ -911,6 +928,20 @@ def main() -> None:
                 if default_interval in ["1m", "3m", "5m", "15m", "30m", "1h", "4h"]
                 else 3,
             )
+            price_source = st.selectbox(
+                "가격 소스",
+                options=["LAST", "MARK"],
+                index=0,
+                help=(
+                    "LAST는 바이낸스 선물 거래뷰 캔들(체결가)과 가장 유사합니다. "
+                    "MARK는 마크가격 캔들입니다."
+                ),
+            )
+            include_open_candle = st.toggle(
+                "진행 중 캔들 포함",
+                value=True,
+                help="바이낸스 차트와 동일하게 마지막 진행 중 캔들을 포함합니다.",
+            )
             show_forecast = st.toggle("예상 캔들 표시", value=False)
             st.caption("화면은 1초마다 갱신되고, 뉴스는 10초마다 자동 갱신됩니다.")
             manual_reconnect_requested = st.button("웹소켓 수동 재연결", use_container_width=True)
@@ -974,12 +1005,25 @@ def main() -> None:
             stream = restart_stream(symbol)
             snapshot = stream.snapshot()
 
-    candles = fetch_futures_klines(symbol=symbol, interval=interval, limit=350)
+    candles = fetch_futures_klines(
+        symbol=symbol,
+        interval=interval,
+        limit=500,
+        price_source=price_source,
+    )
+    if not include_open_candle and len(candles) > 1:
+        candles = candles.iloc[:-1].copy()
     minute_pattern_map, minute_pattern_note_map = collect_pattern_map(
         symbol=symbol,
         intervals=["1m", "3m", "5m", "15m", "30m"],
+        price_source=price_source,
     )
-    timeframe_data = fetch_multi_timeframes(symbol=symbol)
+    timeframe_data = fetch_multi_timeframes(symbol=symbol, price_source=price_source)
+    if not include_open_candle:
+        timeframe_data = {
+            tf: (df.iloc[:-1].copy() if len(df) > 1 else df.copy())
+            for tf, df in timeframe_data.items()
+        }
     timeframe_signals = [
         compute_timeframe_signal(df, tf) for tf, df in timeframe_data.items()
     ]
