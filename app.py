@@ -363,6 +363,8 @@ def render_bias(result: BiasResult) -> None:
     st.markdown(
         f"### 방향성: :{color}[{bias_label}]  |  신뢰도: **{result.confidence}%**",
     )
+    if result.bias == BIAS_NO_TRADE:
+        st.caption("※ 이 수치는 '관망 유지 신뢰도'입니다. 방향성 진입 신호 강도와는 별개입니다.")
     st.write(f"- 롱 점수: {result.long_score}")
     st.write(f"- 숏 점수: {result.short_score}")
     st.write(f"- EMA20: {result.ema_fast:.2f} / EMA50: {result.ema_slow:.2f}")
@@ -480,7 +482,7 @@ def main() -> None:
         news_score=news_score,
     )
 
-    # 엄격 모드에서는 확정 지연을 더 길게 설정해 과민 반응을 줄인다.
+    # 신호 확정 지연: 같은 결과 3회 연속일 때 최종 반영.
     if "bias_history" not in st.session_state:
         st.session_state["bias_history"] = []
     if "confirmed_bias" not in st.session_state:
@@ -488,10 +490,10 @@ def main() -> None:
 
     history = st.session_state["bias_history"]
     history.append(combined_bias.bias)
-    st.session_state["bias_history"] = history[-10:]
+    st.session_state["bias_history"] = history[-8:]
 
-    last_four = st.session_state["bias_history"][-4:]
-    if len(last_four) == 4 and len(set(last_four)) == 1:
+    last_three = st.session_state["bias_history"][-3:]
+    if len(last_three) == 3 and len(set(last_three)) == 1:
         st.session_state["confirmed_bias"] = combined_bias
 
     bias = st.session_state["confirmed_bias"]
@@ -533,7 +535,7 @@ def main() -> None:
 
         render_chart(candles)
         st.caption(
-            "최종 방향성은 동일 신호 4회 연속일 때만 갱신됩니다. "
+            "최종 방향성은 동일 신호 3회 연속일 때만 갱신됩니다. "
             "화면 갱신(1초)보다 신호 변환을 의도적으로 느리게 적용합니다."
         )
         render_trading_checklist(timeframe_signals)

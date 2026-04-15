@@ -574,17 +574,17 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         reasons.append("패턴 감지: 유효 패턴 없음")
 
     if (
-        long_score >= 7
-        and short_score <= 3
+        long_score >= 6
+        and short_score <= 4
         and trend_long
-        and (long_breakout or pattern_long_strength >= 0.65)
+        and (long_breakout or pattern_long_strength >= 0.55)
     ):
         bias = BIAS_LONG
     elif (
-        short_score >= 7
-        and long_score <= 3
+        short_score >= 6
+        and long_score <= 4
         and trend_short
-        and (short_breakout or pattern_short_strength >= 0.65)
+        and (short_breakout or pattern_short_strength >= 0.55)
     ):
         bias = BIAS_SHORT
     else:
@@ -608,7 +608,7 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
             max(
                 20,
                 min(
-                    95,
+                    82,
                     round((no_trade_strength * 100 * 0.75) + ((1 - directional_strength) * 100 * 0.25)),
                 ),
             )
@@ -717,12 +717,12 @@ def combine_signals(
 
     long_gate = (
         long_consensus >= 2
-        and weighted_long >= weighted_short + 5.0
+        and weighted_long >= weighted_short + 3.5
         and (higher_tf is None or higher_tf.bias != BIAS_SHORT)
     )
     short_gate = (
         short_consensus >= 2
-        and weighted_short >= weighted_long + 5.0
+        and weighted_short >= weighted_long + 3.5
         and (higher_tf is None or higher_tf.bias != BIAS_LONG)
     )
 
@@ -741,8 +741,8 @@ def combine_signals(
             max(
                 20,
                 min(
-                    95,
-                    round(35 + (neutrality * 30) + (consensus_balance * 20) + (gate_block_strength * 10)),
+                    82,
+                    round(28 + (neutrality * 25) + (consensus_balance * 17) + (gate_block_strength * 8)),
                 ),
             )
         )
