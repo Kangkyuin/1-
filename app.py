@@ -499,18 +499,50 @@ def calculate_pattern_rr(pattern: PatternSignal) -> float:
     return max(0.0, reward / risk)
 
 
-def collect_pattern_map(symbol: str, intervals: list[str]) -> dict[str, list[PatternSignal]]:
+def resolve_primary_pattern(patterns: list[PatternSignal]) -> tuple[list[PatternSignal], str]:
+    if not patterns:
+        return [], "감지 없음"
+
+    ordered = sorted(patterns, key=lambda item: item.quality, reverse=True)
+    long_strength = sum(item.quality for item in ordered if item.bias == BIAS_LONG)
+    short_strength = sum(item.quality for item in ordered if item.bias == BIAS_SHORT)
+    dominant_strength = max(long_strength, short_strength)
+    weakest_strength = min(long_strength, short_strength)
+
+    if dominant_strength < 0.55:
+        return [], "패턴 품질 낮음"
+
+    if weakest_strength > 0 and abs(long_strength - short_strength) < 0.28:
+        return [], "롱/숏 패턴 충돌"
+
+    dominant_bias = BIAS_LONG if long_strength >= short_strength else BIAS_SHORT
+    dominant_candidates = [item for item in ordered if item.bias == dominant_bias]
+    if not dominant_candidates:
+        return [], "우세 방향 불명확"
+
+    primary = dominant_candidates[0]
+    rr = calculate_pattern_rr(primary)
+    if rr < 1.1:
+        return [], "손익비(RR) 부족"
+
+    return [primary], f"채택: {primary.name} ({bias_to_korean(primary.bias)})"
+
+
+def collect_pattern_map(symbol: str, intervals: list[str]) -> tuple[dict[str, list[PatternSignal]], dict[str, str]]:
     pattern_map: dict[str, list[PatternSignal]] = {}
+    pattern_note_map: dict[str, str] = {}
     for tf in intervals:
         tf_candles = fetch_futures_klines(symbol=symbol, interval=tf, limit=350)
-        pattern_map[tf] = detect_chart_patterns(tf_candles)
-    return pattern_map
+        resolved_patterns, note = resolve_primary_pattern(detect_chart_patterns(tf_candles))
+        pattern_map[tf] = resolved_patterns
+        pattern_note_map[tf] = note
+    return pattern_map, pattern_note_map
 
 
 def render_chart(
     df: pd.DataFrame,
     pattern_overlays: list[PatternSignal] | None = None,
-    overlay_limit: int = 3,
+    overlay_limit: int = 1,
 ) -> None:
     chart_df = df.tail(120)
     if chart_df.empty:
@@ -704,7 +736,10 @@ def render_pattern_detail(interval: str, patterns: list[PatternSignal]) -> None:
         )
 
 
-def render_pattern_matrix(pattern_map: dict[str, list[PatternSignal]]) -> None:
+def render_pattern_matrix(
+    pattern_map: dict[str, list[PatternSignal]],
+    note_map: dict[str, str],
+) -> None:
     st.markdown("#### 분봉별 패턴 매트릭스 (진입/손절/목표)")
     rows: list[dict[str, str | float]] = []
     for tf in ["1m", "3m", "5m", "15m", "30m"]:
@@ -713,7 +748,7 @@ def render_pattern_matrix(pattern_map: dict[str, list[PatternSignal]]) -> None:
             rows.append(
                 {
                     "주기": tf,
-                    "순위": "-",
+                    "순위": 1,
                     "패턴": "감지 없음",
                     "방향": "관망",
                     "품질(%)": 0.0,
@@ -721,11 +756,11 @@ def render_pattern_matrix(pattern_map: dict[str, list[PatternSignal]]) -> None:
                     "손절": "-",
                     "목표": "-",
                     "RR": "-",
-                    "코멘트": "유효한 돌파 패턴 없음",
+                    "코멘트": note_map.get(tf, "유효한 돌파 패턴 없음"),
                 }
             )
             continue
-        for rank, pattern in enumerate(patterns[:2], start=1):
+        for rank, pattern in enumerate(patterns[:1], start=1):
             rows.append(
                 {
                     "주기": tf,
@@ -737,7 +772,7 @@ def render_pattern_matrix(pattern_map: dict[str, list[PatternSignal]]) -> None:
                     "손절": round(pattern.stop, 2),
                     "목표": round(pattern.target, 2),
                     "RR": round(calculate_pattern_rr(pattern), 2),
-                    "코멘트": pattern.reason,
+                    "코멘트": note_map.get(tf, pattern.reason),
                 }
             )
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -831,7 +866,10 @@ def main() -> None:
             snapshot = stream.snapshot()
 
     candles = fetch_futures_klines(symbol=symbol, interval=interval, limit=350)
-    minute_pattern_map = collect_pattern_map(symbol=symbol, intervals=["1m", "3m", "5m", "15m", "30m"])
+    minute_pattern_map, minute_pattern_note_map = collect_pattern_map(
+        symbol=symbol,
+        intervals=["1m", "3m", "5m", "15m", "30m"],
+    )
     timeframe_data = fetch_multi_timeframes(symbol=symbol)
     timeframe_signals = [
         compute_timeframe_signal(df, tf) for tf, df in timeframe_data.items()
@@ -930,7 +968,7 @@ def main() -> None:
         else:
             st.caption("차트 오버레이 패턴: 현재 감지 없음")
         render_pattern_detail(interval=interval, patterns=chart_patterns)
-        render_pattern_matrix(minute_pattern_map)
+        render_pattern_matrix(minute_pattern_map, minute_pattern_note_map)
         render_trading_checklist(timeframe_signals)
         render_bias(bias)
 
