@@ -23,7 +23,9 @@ from signal_engine import (
     BIAS_SHORT,
     BiasResult,
     bias_to_korean,
-    compute_bias,
+    combine_signals,
+    compute_timeframe_signal,
+    infer_news_sentiment_from_text,
 )
 
 load_dotenv()
@@ -35,6 +37,8 @@ class StreamSnapshot:
     latest_event_time: datetime | None
     trade_count_10s: int
     move_10s_pct: float | None
+    buy_ratio_30s: float | None
+    sell_ratio_30s: float | None
     stream_connected: bool
     stream_status: str
     message_age_sec: float | None
@@ -54,6 +58,7 @@ class BinanceAggTradeStream:
         self._latest_price: float | None = None
         self._latest_event_time: datetime | None = None
         self._trades: deque[tuple[datetime, float]] = deque(maxlen=4000)
+        self._orderflow: deque[tuple[datetime, bool]] = deque(maxlen=12000)
 
     def start(self) -> None:
         if self._running:
@@ -92,10 +97,12 @@ class BinanceAggTradeStream:
 
         event_time = datetime.fromtimestamp(payload["E"] / 1000, tz=timezone.utc)
         price = float(payload["p"])
+        is_buyer_maker = bool(payload.get("m", False))
         with self._lock:
             self._latest_price = price
             self._latest_event_time = event_time
             self._trades.append((event_time, price))
+            self._orderflow.append((event_time, is_buyer_maker))
 
     def _on_error(self, _ws: websocket.WebSocketApp, _error: Any) -> None:
         with self._lock:
@@ -118,6 +125,7 @@ class BinanceAggTradeStream:
             connected = self._connected
             reconnect_count = self._reconnect_count
             recent = [trade for trade in self._trades if (now - trade[0]).total_seconds() <= 10]
+            orderflow_recent = [flow for flow in self._orderflow if (now - flow[0]).total_seconds() <= 30]
 
         move_10s_pct: float | None = None
         if len(recent) >= 2 and recent[0][1] > 0:
@@ -126,6 +134,15 @@ class BinanceAggTradeStream:
         message_age_sec: float | None = None
         if latest_event_time is not None:
             message_age_sec = (now - latest_event_time).total_seconds()
+
+        buy_ratio_30s: float | None = None
+        sell_ratio_30s: float | None = None
+        if orderflow_recent:
+            # aggTrade.m = True means buyer is maker -> aggressive side is sell.
+            sell_count = sum(1 for _, is_buyer_maker in orderflow_recent if is_buyer_maker)
+            buy_count = len(orderflow_recent) - sell_count
+            buy_ratio_30s = buy_count / len(orderflow_recent)
+            sell_ratio_30s = sell_count / len(orderflow_recent)
 
         if connected:
             if message_age_sec is None:
@@ -142,6 +159,8 @@ class BinanceAggTradeStream:
             latest_event_time=latest_event_time,
             trade_count_10s=len(recent),
             move_10s_pct=move_10s_pct,
+            buy_ratio_30s=buy_ratio_30s,
+            sell_ratio_30s=sell_ratio_30s,
             stream_connected=connected,
             stream_status=stream_status,
             message_age_sec=message_age_sec,
@@ -181,6 +200,15 @@ def fetch_futures_klines(symbol: str, interval: str, limit: int = 300) -> pd.Dat
         df[col] = df[col].astype(float)
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     return df
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def fetch_multi_timeframes(symbol: str) -> dict[str, pd.DataFrame]:
+    return {
+        "5m": fetch_futures_klines(symbol=symbol, interval="5m", limit=350),
+        "15m": fetch_futures_klines(symbol=symbol, interval="15m", limit=350),
+        "1h": fetch_futures_klines(symbol=symbol, interval="1h", limit=350),
+    }
 
 
 def get_or_create_stream(symbol: str) -> BinanceAggTradeStream:
@@ -253,6 +281,10 @@ def render_bias(result: BiasResult) -> None:
     st.write(f"- 숏 점수: {result.short_score}")
     st.write(f"- EMA20: {result.ema_fast:.2f} / EMA50: {result.ema_slow:.2f}")
     st.write(f"- RSI14: {result.rsi:.2f}")
+    if result.timeframe_votes:
+        st.write("#### 타임프레임 합의")
+        for vote in result.timeframe_votes:
+            st.write(f"- {vote}")
     st.write("#### 판단 근거")
     for reason in result.reasons:
         st.write(f"- {reason}")
@@ -277,15 +309,50 @@ def main() -> None:
             if default_interval in ["1m", "3m", "5m", "15m", "30m", "1h", "4h"]
             else 3,
         )
+        st.markdown("#### 뉴스/칼럼 참고 (선택)")
+        news_input = st.text_area(
+            "관련 뉴스 헤드라인 또는 칼럼 핵심 문장",
+            placeholder="예: BTC ETF 추가 승인 기대감으로 기관 자금 유입 확대...",
+            height=90,
+        )
+        news_score, news_reason = infer_news_sentiment_from_text(news_input)
+        if news_score is not None:
+            st.caption(f"{news_reason} / 점수 {news_score:+.2f}")
+        else:
+            st.caption(news_reason)
         st.caption("화면은 1초마다 갱신되고, 체결 스트림은 WebSocket으로 수신합니다.")
 
     stream = get_or_create_stream(symbol)
     snapshot = stream.snapshot()
     candles = fetch_futures_klines(symbol=symbol, interval=interval, limit=350)
-    bias = compute_bias(candles)
+    timeframe_data = fetch_multi_timeframes(symbol=symbol)
+    timeframe_signals = [
+        compute_timeframe_signal(df, tf) for tf, df in timeframe_data.items()
+    ]
+    combined_bias = combine_signals(
+        signals=timeframe_signals,
+        orderflow_buy_ratio=snapshot.buy_ratio_30s,
+        news_score=news_score,
+    )
+
+    # 신호 출렁임을 줄이기 위한 확정 지연: 같은 결과 3회 연속일 때만 최종 반영
+    if "bias_history" not in st.session_state:
+        st.session_state["bias_history"] = []
+    if "confirmed_bias" not in st.session_state:
+        st.session_state["confirmed_bias"] = combined_bias
+
+    history = st.session_state["bias_history"]
+    history.append(combined_bias.bias)
+    st.session_state["bias_history"] = history[-6:]
+
+    last_three = st.session_state["bias_history"][-3:]
+    if len(last_three) == 3 and len(set(last_three)) == 1:
+        st.session_state["confirmed_bias"] = combined_bias
+
+    bias = st.session_state["confirmed_bias"]
 
     with col_left:
-        metric_cols = st.columns(4)
+        metric_cols = st.columns(6)
         metric_cols[0].metric("현재가", f"{snapshot.latest_price:.2f}" if snapshot.latest_price else "-")
         metric_cols[1].metric("최근 10초 체결 수", snapshot.trade_count_10s)
         metric_cols[2].metric(
@@ -294,15 +361,31 @@ def main() -> None:
             if snapshot.move_10s_pct is not None
             else "-",
         )
+        metric_cols[3].metric(
+            "30초 매수 비율",
+            f"{snapshot.buy_ratio_30s * 100:.1f}%"
+            if snapshot.buy_ratio_30s is not None
+            else "-",
+        )
+        metric_cols[4].metric(
+            "30초 매도 비율",
+            f"{snapshot.sell_ratio_30s * 100:.1f}%"
+            if snapshot.sell_ratio_30s is not None
+            else "-",
+        )
         status_label = {
             "LIVE": "정상",
             "CONNECTING": "연결 중",
             "STALE": "데이터 지연",
             "RECONNECTING": "재연결 중",
         }.get(snapshot.stream_status, "확인 필요")
-        metric_cols[3].metric("웹소켓 상태", status_label, f"재연결 {snapshot.reconnect_count}회")
+        metric_cols[5].metric("웹소켓 상태", status_label, f"재연결 {snapshot.reconnect_count}회")
 
         render_chart(candles)
+        st.caption(
+            "최종 방향성은 동일 신호 3회 연속일 때만 갱신됩니다. "
+            "화면 갱신(1초)보다 신호 변환을 의도적으로 느리게 적용합니다."
+        )
         render_bias(bias)
 
     if snapshot.latest_event_time is not None:
