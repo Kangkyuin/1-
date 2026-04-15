@@ -52,6 +52,7 @@ class TimeframeSignal:
     pattern_summaries: list[str]
     pattern_long_strength: float
     pattern_short_strength: float
+    pattern_signals: list[PatternSignal]
 
 
 def bias_to_korean(bias: str) -> str:
@@ -446,6 +447,7 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
             pattern_summaries=[],
             pattern_long_strength=0.0,
             pattern_short_strength=0.0,
+            pattern_signals=[],
         )
 
     working = df.copy()
@@ -501,6 +503,7 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
             pattern_summaries=[],
             pattern_long_strength=0.0,
             pattern_short_strength=0.0,
+            pattern_signals=[],
         )
 
     patterns = detect_chart_patterns(working)
@@ -640,6 +643,7 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         pattern_summaries=pattern_summaries,
         pattern_long_strength=pattern_long_strength,
         pattern_short_strength=pattern_short_strength,
+        pattern_signals=patterns,
     )
 
 

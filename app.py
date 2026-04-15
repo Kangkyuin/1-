@@ -26,9 +26,11 @@ from signal_engine import (
     BIAS_NO_TRADE,
     BIAS_SHORT,
     BiasResult,
+    PatternSignal,
     bias_to_korean,
     combine_signals,
     compute_timeframe_signal,
+    detect_chart_patterns,
     infer_news_sentiment_from_text,
 )
 
@@ -313,7 +315,7 @@ def restart_stream(symbol: str) -> BinanceAggTradeStream:
     return stream
 
 
-def render_chart(df: pd.DataFrame) -> None:
+def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None = None) -> None:
     chart_df = df.tail(120)
     if chart_df.empty:
         st.info("표시할 캔들 데이터가 없습니다.")
@@ -337,6 +339,53 @@ def render_chart(df: pd.DataFrame) -> None:
             name="가격",
         )
     )
+
+    if pattern_overlays:
+        top_pattern = pattern_overlays[0]
+        direction_color = "#22c55e" if top_pattern.bias == BIAS_LONG else "#ef4444"
+        fig.add_trace(
+            go.Scatter(
+                x=[x_start, x_end],
+                y=[top_pattern.entry, top_pattern.entry],
+                mode="lines",
+                line=dict(color=direction_color, dash="dash", width=1.8),
+                name="패턴 진입",
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[x_start, x_end],
+                y=[top_pattern.stop, top_pattern.stop],
+                mode="lines",
+                line=dict(color="#f97316", dash="dot", width=1.4),
+                name="패턴 손절",
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[x_start, x_end],
+                y=[top_pattern.target, top_pattern.target],
+                mode="lines",
+                line=dict(color="#38bdf8", dash="dot", width=1.4),
+                name="패턴 목표",
+                showlegend=False,
+            )
+        )
+        fig.add_annotation(
+            x=x_end,
+            y=top_pattern.entry,
+            text=(
+                f"{top_pattern.name} {bias_to_korean(top_pattern.bias)} "
+                f"Q{top_pattern.quality * 100:.0f}%"
+            ),
+            showarrow=False,
+            xanchor="left",
+            yanchor="bottom",
+            font=dict(color=direction_color, size=11),
+            bgcolor="rgba(255,255,255,0.75)",
+        )
     fig.update_layout(
         margin=dict(l=10, r=10, t=10, b=10),
         height=520,
@@ -476,6 +525,12 @@ def main() -> None:
     timeframe_signals = [
         compute_timeframe_signal(df, tf) for tf, df in timeframe_data.items()
     ]
+    signal_by_timeframe = {signal.timeframe: signal for signal in timeframe_signals}
+    if interval in signal_by_timeframe:
+        chart_patterns = signal_by_timeframe[interval].pattern_signals
+    else:
+        chart_patterns = detect_chart_patterns(candles)
+
     combined_bias = combine_signals(
         signals=timeframe_signals,
         orderflow_buy_ratio=snapshot.buy_ratio_30s,
@@ -533,11 +588,20 @@ def main() -> None:
                 "필요하면 우측의 '웹소켓 수동 재연결' 버튼을 눌러주세요."
             )
 
-        render_chart(candles)
+        render_chart(candles, chart_patterns)
         st.caption(
             "최종 방향성은 동일 신호 3회 연속일 때만 갱신됩니다. "
             "화면 갱신(1초)보다 신호 변환을 의도적으로 느리게 적용합니다."
         )
+        if chart_patterns:
+            top_pattern = chart_patterns[0]
+            st.caption(
+                "차트 오버레이 패턴: "
+                f"{top_pattern.name} / {bias_to_korean(top_pattern.bias)} / "
+                f"진입 {top_pattern.entry:.2f} · 손절 {top_pattern.stop:.2f} · 목표 {top_pattern.target:.2f}"
+            )
+        else:
+            st.caption("차트 오버레이 패턴: 현재 감지 없음")
         render_trading_checklist(timeframe_signals)
         render_bias(bias)
 
