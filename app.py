@@ -630,10 +630,11 @@ def render_chart(
         paper_bgcolor="#0b0e11",
         plot_bgcolor="#0b0e11",
         font=dict(color="#eaecef"),
+        dragmode="pan",
     )
     fig.update_xaxes(
         range=[x_start, x_end],
-        fixedrange=True,
+        fixedrange=False,
         showgrid=True,
         gridcolor="#1f2733",
         linecolor="#2b3139",
@@ -653,7 +654,8 @@ def render_chart(
         use_container_width=True,
         config={
             "displaylogo": False,
-            "modeBarButtonsToRemove": ["pan2d"],
+            "modeBarButtonsToRemove": [],
+            "scrollZoom": True,
         },
     )
 
