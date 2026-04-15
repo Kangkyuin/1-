@@ -7,7 +7,11 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import quote_plus
+from urllib.request import urlopen
+import xml.etree.ElementTree as ET
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -211,6 +215,71 @@ def fetch_multi_timeframes(symbol: str) -> dict[str, pd.DataFrame]:
     }
 
 
+def extract_base_asset(symbol: str) -> str:
+    quote_assets = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "BTC", "ETH", "BNB", "KRW"]
+    for quote in quote_assets:
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            return symbol[: -len(quote)]
+    return symbol
+
+
+def build_news_query(symbol: str) -> str:
+    base = extract_base_asset(symbol.upper())
+    symbol_alias = {
+        "BTC": "비트코인 OR bitcoin",
+        "ETH": "이더리움 OR ethereum",
+        "SOL": "솔라나 OR solana",
+        "XRP": "리플 OR xrp",
+        "DOGE": "도지코인 OR dogecoin",
+        "ADA": "카르다노 OR cardano",
+    }
+    main_keyword = symbol_alias.get(base, f"{base} OR {base} coin")
+    return f"({main_keyword}) (crypto OR cryptocurrency OR 코인)"
+
+
+def format_pubdate_kst(pub_date: str) -> str:
+    if not pub_date:
+        return "-"
+    try:
+        parsed = parsedate_to_datetime(pub_date).astimezone()
+        return parsed.strftime("%m-%d %H:%M")
+    except Exception:
+        return pub_date
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_live_news(symbol: str, limit: int = 8) -> tuple[list[dict[str, str]], str | None]:
+    query = build_news_query(symbol)
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={quote_plus(query)}&hl=ko&gl=KR&ceid=KR:ko"
+    )
+    try:
+        with urlopen(url, timeout=8) as response:
+            raw_xml = response.read()
+        root = ET.fromstring(raw_xml)
+        items: list[dict[str, str]] = []
+        for item in root.findall("./channel/item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            source = (item.findtext("source") or "출처 미상").strip()
+            pub_date = format_pubdate_kst((item.findtext("pubDate") or "").strip())
+            if title and link:
+                items.append(
+                    {
+                        "title": title,
+                        "link": link,
+                        "source": source,
+                        "pub_date": pub_date,
+                    }
+                )
+            if len(items) >= limit:
+                break
+        return items, None
+    except Exception as exc:
+        return [], f"뉴스를 불러오지 못했습니다: {exc}"
+
+
 def get_or_create_stream(symbol: str) -> BinanceAggTradeStream:
     existing = st.session_state.get("agg_stream")
     existing_symbol = st.session_state.get("agg_stream_symbol")
@@ -321,6 +390,20 @@ def main() -> None:
         else:
             st.caption(news_reason)
         st.caption("화면은 1초마다 갱신되고, 체결 스트림은 WebSocket으로 수신합니다.")
+
+        st.markdown("---")
+        st.markdown("#### 실시간 코인 뉴스")
+        news_items, news_error = fetch_live_news(symbol=symbol, limit=7)
+        if news_error:
+            st.info(news_error)
+        elif not news_items:
+            st.info("표시할 뉴스가 없습니다.")
+        else:
+            for article in news_items:
+                st.markdown(
+                    f"- [{article['title']}]({article['link']})  \n"
+                    f"  `{article['source']}` · `{article['pub_date']}`"
+                )
 
     stream = get_or_create_stream(symbol)
     snapshot = stream.snapshot()
