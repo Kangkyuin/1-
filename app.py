@@ -487,7 +487,31 @@ def inject_binance_theme() -> None:
     )
 
 
-def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None = None) -> None:
+def calculate_pattern_rr(pattern: PatternSignal) -> float:
+    if pattern.bias == BIAS_LONG:
+        risk = pattern.entry - pattern.stop
+        reward = pattern.target - pattern.entry
+    else:
+        risk = pattern.stop - pattern.entry
+        reward = pattern.entry - pattern.target
+    if risk <= 0:
+        return 0.0
+    return max(0.0, reward / risk)
+
+
+def collect_pattern_map(symbol: str, intervals: list[str]) -> dict[str, list[PatternSignal]]:
+    pattern_map: dict[str, list[PatternSignal]] = {}
+    for tf in intervals:
+        tf_candles = fetch_futures_klines(symbol=symbol, interval=tf, limit=350)
+        pattern_map[tf] = detect_chart_patterns(tf_candles)
+    return pattern_map
+
+
+def render_chart(
+    df: pd.DataFrame,
+    pattern_overlays: list[PatternSignal] | None = None,
+    overlay_limit: int = 3,
+) -> None:
     chart_df = df.tail(120)
     if chart_df.empty:
         st.info("표시할 캔들 데이터가 없습니다.")
@@ -517,53 +541,56 @@ def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None 
     )
 
     if pattern_overlays:
-        top_pattern = pattern_overlays[0]
-        direction_color = "#0ecb81" if top_pattern.bias == BIAS_LONG else "#f6465d"
-        fig.add_trace(
-            go.Scatter(
-                x=[x_start, x_end],
-                y=[top_pattern.entry, top_pattern.entry],
-                mode="lines",
-                line=dict(color="#f0b90b", dash="dash", width=1.8),
-                name="패턴 진입",
-                showlegend=False,
+        overlay_candidates = sorted(pattern_overlays, key=lambda item: item.quality, reverse=True)[:overlay_limit]
+        label_step = float((chart_df["high"].max() - chart_df["low"].min()) * 0.015)
+        for idx, pattern in enumerate(overlay_candidates):
+            direction_color = "#0ecb81" if pattern.bias == BIAS_LONG else "#f6465d"
+            tag = f"{idx + 1}:{pattern.name} {bias_to_korean(pattern.bias)}"
+            fig.add_trace(
+                go.Scatter(
+                    x=[x_start, x_end],
+                    y=[pattern.entry, pattern.entry],
+                    mode="lines",
+                    line=dict(color="#f0b90b", dash="dash", width=1.8),
+                    name=f"{tag} 진입",
+                    showlegend=True,
+                )
             )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=[x_start, x_end],
-                y=[top_pattern.stop, top_pattern.stop],
-                mode="lines",
-                line=dict(color="#f6465d", dash="dot", width=1.4),
-                name="패턴 손절",
-                showlegend=False,
+            fig.add_trace(
+                go.Scatter(
+                    x=[x_start, x_end],
+                    y=[pattern.stop, pattern.stop],
+                    mode="lines",
+                    line=dict(color="#f6465d", dash="dot", width=1.3),
+                    name=f"{tag} 손절",
+                    showlegend=False,
+                )
             )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=[x_start, x_end],
-                y=[top_pattern.target, top_pattern.target],
-                mode="lines",
-                line=dict(color="#0ecb81", dash="dot", width=1.4),
-                name="패턴 목표",
-                showlegend=False,
+            fig.add_trace(
+                go.Scatter(
+                    x=[x_start, x_end],
+                    y=[pattern.target, pattern.target],
+                    mode="lines",
+                    line=dict(color="#0ecb81", dash="dot", width=1.3),
+                    name=f"{tag} 목표",
+                    showlegend=False,
+                )
             )
-        )
-        fig.add_annotation(
-            x=x_end,
-            y=top_pattern.entry,
-            text=(
-                f"{top_pattern.name} {bias_to_korean(top_pattern.bias)} "
-                f"Q{top_pattern.quality * 100:.0f}%"
-            ),
-            showarrow=False,
-            xanchor="left",
-            yanchor="bottom",
-            font=dict(color=direction_color, size=11),
-            bgcolor="rgba(30, 35, 41, 0.88)",
-            bordercolor="#2b3139",
-            borderwidth=1,
-        )
+            fig.add_annotation(
+                x=x_end,
+                y=pattern.entry + (label_step * idx),
+                text=(
+                    f"{idx + 1}) {pattern.name} {bias_to_korean(pattern.bias)} "
+                    f"Q{pattern.quality * 100:.0f}%"
+                ),
+                showarrow=False,
+                xanchor="left",
+                yanchor="bottom",
+                font=dict(color=direction_color, size=10),
+                bgcolor="rgba(30, 35, 41, 0.88)",
+                bordercolor="#2b3139",
+                borderwidth=1,
+            )
     fig.update_layout(
         margin=dict(l=10, r=10, t=10, b=10),
         height=520,
@@ -645,6 +672,75 @@ def render_trading_checklist(timeframe_signals: list[Any]) -> None:
                 st.write(f"- 대표 패턴: {signal.pattern_summaries[0]}")
             else:
                 st.write("- 대표 패턴: 감지 없음")
+
+
+def render_pattern_detail(interval: str, patterns: list[PatternSignal]) -> None:
+    st.markdown(f"#### {interval} 패턴 진입 플랜")
+    if not patterns:
+        st.info(f"{interval}에서 유효 패턴이 감지되지 않았습니다.")
+        return
+
+    for rank, pattern in enumerate(patterns[:3], start=1):
+        direction = bias_to_korean(pattern.bias)
+        direction_color = "#0ecb81" if pattern.bias == BIAS_LONG else "#f6465d"
+        rr = calculate_pattern_rr(pattern)
+        st.markdown(
+            (
+                "<div class='bias-card' style='margin-bottom:0.45rem;'>"
+                "<div class='bias-head'>"
+                f"<span class='bias-pill {'long' if pattern.bias == BIAS_LONG else 'short'}'>{rank}. {pattern.name} · {direction}</span>"
+                f"<span class='bias-conf'>품질 {pattern.quality * 100:.1f}%</span>"
+                "</div>"
+                f"<div style='margin-top:0.4rem; color:#b7bdc6; font-size:0.84rem;'>"
+                f"진입 <span style='color:#f0b90b;'>{pattern.entry:.2f}</span> · "
+                f"손절 <span style='color:#f6465d;'>{pattern.stop:.2f}</span> · "
+                f"목표 <span style='color:#0ecb81;'>{pattern.target:.2f}</span> · "
+                f"RR <span style='color:{direction_color};'>{rr:.2f}</span>"
+                "</div>"
+                f"<div style='margin-top:0.2rem; color:#848e9c; font-size:0.78rem;'>{pattern.reason}</div>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+
+
+def render_pattern_matrix(pattern_map: dict[str, list[PatternSignal]]) -> None:
+    st.markdown("#### 분봉별 패턴 매트릭스 (진입/손절/목표)")
+    rows: list[dict[str, str | float]] = []
+    for tf in ["1m", "3m", "5m", "15m", "30m"]:
+        patterns = pattern_map.get(tf, [])
+        if not patterns:
+            rows.append(
+                {
+                    "주기": tf,
+                    "순위": "-",
+                    "패턴": "감지 없음",
+                    "방향": "관망",
+                    "품질(%)": 0.0,
+                    "진입": "-",
+                    "손절": "-",
+                    "목표": "-",
+                    "RR": "-",
+                    "코멘트": "유효한 돌파 패턴 없음",
+                }
+            )
+            continue
+        for rank, pattern in enumerate(patterns[:2], start=1):
+            rows.append(
+                {
+                    "주기": tf,
+                    "순위": rank,
+                    "패턴": pattern.name,
+                    "방향": bias_to_korean(pattern.bias),
+                    "품질(%)": round(pattern.quality * 100, 1),
+                    "진입": round(pattern.entry, 2),
+                    "손절": round(pattern.stop, 2),
+                    "목표": round(pattern.target, 2),
+                    "RR": round(calculate_pattern_rr(pattern), 2),
+                    "코멘트": pattern.reason,
+                }
+            )
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
@@ -735,13 +831,16 @@ def main() -> None:
             snapshot = stream.snapshot()
 
     candles = fetch_futures_klines(symbol=symbol, interval=interval, limit=350)
+    minute_pattern_map = collect_pattern_map(symbol=symbol, intervals=["1m", "3m", "5m", "15m", "30m"])
     timeframe_data = fetch_multi_timeframes(symbol=symbol)
     timeframe_signals = [
         compute_timeframe_signal(df, tf) for tf, df in timeframe_data.items()
     ]
     signal_by_timeframe = {signal.timeframe: signal for signal in timeframe_signals}
     selected_signal = signal_by_timeframe.get(interval)
-    if selected_signal is not None:
+    if interval in minute_pattern_map:
+        chart_patterns = minute_pattern_map.get(interval, [])
+    elif selected_signal is not None:
         chart_patterns = getattr(selected_signal, "pattern_signals", None) or detect_chart_patterns(candles)
     else:
         chart_patterns = detect_chart_patterns(candles)
@@ -827,14 +926,11 @@ def main() -> None:
             "화면 갱신(1초)보다 신호 변환을 의도적으로 느리게 적용합니다."
         )
         if chart_patterns:
-            top_pattern = chart_patterns[0]
-            st.caption(
-                "차트 오버레이 패턴: "
-                f"{top_pattern.name} / {bias_to_korean(top_pattern.bias)} / "
-                f"진입 {top_pattern.entry:.2f} · 손절 {top_pattern.stop:.2f} · 목표 {top_pattern.target:.2f}"
-            )
+            st.caption("오버레이에는 품질 상위 3개 패턴의 진입/손절/목표선이 표시됩니다.")
         else:
             st.caption("차트 오버레이 패턴: 현재 감지 없음")
+        render_pattern_detail(interval=interval, patterns=chart_patterns)
+        render_pattern_matrix(minute_pattern_map)
         render_trading_checklist(timeframe_signals)
         render_bias(bias)
 
