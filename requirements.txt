@@ -1,0 +1,8 @@
+streamlit
+python-binance
+pandas
+ta
+plotly
+python-dotenv
+streamlit-autorefresh
+websocket-client
