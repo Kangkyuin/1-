@@ -376,6 +376,18 @@ def render_bias(result: BiasResult) -> None:
         st.write(f"- {reason}")
 
 
+def render_trading_checklist(timeframe_signals: list[Any]) -> None:
+    st.markdown("#### 엄격 진입 체크리스트")
+    if not timeframe_signals:
+        st.write("- 체크리스트 데이터가 없습니다.")
+        return
+    for signal in timeframe_signals:
+        st.write(
+            f"- {signal.timeframe}: ADX {signal.adx:.1f}, ATR% {signal.atr_pct:.2f}, "
+            f"EMA200 {signal.ema_trend:.2f}, 판정 {bias_to_korean(signal.bias)}"
+        )
+
+
 def main() -> None:
     st.set_page_config(page_title="바이낸스 선물 실시간 방향성", layout="wide")
     st_autorefresh(interval=1000, key="ui_autorefresh")
@@ -464,7 +476,7 @@ def main() -> None:
         news_score=news_score,
     )
 
-    # 신호 출렁임을 줄이기 위한 확정 지연: 같은 결과 3회 연속일 때만 최종 반영
+    # 엄격 모드에서는 확정 지연을 더 길게 설정해 과민 반응을 줄인다.
     if "bias_history" not in st.session_state:
         st.session_state["bias_history"] = []
     if "confirmed_bias" not in st.session_state:
@@ -472,10 +484,10 @@ def main() -> None:
 
     history = st.session_state["bias_history"]
     history.append(combined_bias.bias)
-    st.session_state["bias_history"] = history[-6:]
+    st.session_state["bias_history"] = history[-10:]
 
-    last_three = st.session_state["bias_history"][-3:]
-    if len(last_three) == 3 and len(set(last_three)) == 1:
+    last_four = st.session_state["bias_history"][-4:]
+    if len(last_four) == 4 and len(set(last_four)) == 1:
         st.session_state["confirmed_bias"] = combined_bias
 
     bias = st.session_state["confirmed_bias"]
@@ -517,9 +529,10 @@ def main() -> None:
 
         render_chart(candles)
         st.caption(
-            "최종 방향성은 동일 신호 3회 연속일 때만 갱신됩니다. "
+            "최종 방향성은 동일 신호 4회 연속일 때만 갱신됩니다. "
             "화면 갱신(1초)보다 신호 변환을 의도적으로 느리게 적용합니다."
         )
+        render_trading_checklist(timeframe_signals)
         render_bias(bias)
 
     if snapshot.latest_event_time is not None:
