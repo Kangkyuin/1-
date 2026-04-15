@@ -315,6 +315,178 @@ def restart_stream(symbol: str) -> BinanceAggTradeStream:
     return stream
 
 
+def inject_binance_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --binance-bg: #0b0e11;
+            --binance-panel: #1e2329;
+            --binance-panel-soft: #161a1e;
+            --binance-border: #2b3139;
+            --binance-text: #eaecef;
+            --binance-muted: #848e9c;
+            --binance-yellow: #f0b90b;
+            --binance-green: #0ecb81;
+            --binance-red: #f6465d;
+        }
+        .stApp, div[data-testid="stAppViewContainer"], .main, section.main {
+            background: var(--binance-bg);
+            color: var(--binance-text);
+        }
+        .block-container {
+            max-width: 1600px;
+            padding-top: 0.8rem;
+            padding-bottom: 1.2rem;
+        }
+        div[data-testid="stAppViewContainer"] > .main {
+            background: var(--binance-bg);
+        }
+        div[data-testid="stHeader"] {
+            background: rgba(11, 14, 17, 0.85);
+            border-bottom: 1px solid var(--binance-border);
+        }
+        h1, h2, h3, h4, h5, h6, label, p, li, span {
+            color: var(--binance-text);
+        }
+        .binance-title {
+            font-size: 1.45rem;
+            font-weight: 700;
+            color: var(--binance-yellow);
+            margin-bottom: 0.15rem;
+        }
+        .binance-subtitle {
+            color: var(--binance-muted);
+            font-size: 0.95rem;
+            margin-bottom: 0.7rem;
+        }
+        div[data-testid="stMetric"] {
+            background: linear-gradient(160deg, var(--binance-panel) 0%, var(--binance-panel-soft) 100%);
+            border: 1px solid var(--binance-border);
+            border-radius: 10px;
+            padding: 0.45rem 0.6rem;
+            box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1) inset;
+        }
+        div[data-testid="stMetricLabel"] p {
+            color: var(--binance-muted);
+            font-size: 0.78rem;
+        }
+        div[data-testid="stMetricValue"] {
+            color: var(--binance-text);
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border: 1px solid var(--binance-border);
+            border-radius: 12px;
+            background: linear-gradient(165deg, rgba(30,35,41,0.95) 0%, rgba(22,26,30,0.95) 100%);
+        }
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="select"] > div,
+        textarea {
+            background: var(--binance-panel) !important;
+            border-color: var(--binance-border) !important;
+            color: var(--binance-text) !important;
+        }
+        .stSelectbox div[data-baseweb="select"] span,
+        .stTextInput input,
+        .stTextArea textarea {
+            color: var(--binance-text) !important;
+        }
+        .stButton > button {
+            background: var(--binance-yellow);
+            color: #111;
+            border: 0;
+            border-radius: 8px;
+            font-weight: 700;
+        }
+        .stButton > button:hover {
+            background: #ffd148;
+            color: #111;
+        }
+        div[data-testid="stCaptionContainer"] p,
+        .stCaption {
+            color: var(--binance-muted) !important;
+        }
+        div[data-testid="stAlert"] {
+            border-radius: 10px;
+            border: 1px solid var(--binance-border);
+            background: var(--binance-panel);
+            color: var(--binance-text);
+        }
+        hr {
+            border: none;
+            border-top: 1px solid var(--binance-border);
+        }
+        .status-strip {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin: 0.2rem 0 0.7rem 0;
+        }
+        .status-chip {
+            border: 1px solid var(--binance-border);
+            background: var(--binance-panel);
+            color: var(--binance-text);
+            border-radius: 999px;
+            padding: 0.2rem 0.7rem;
+            font-size: 0.78rem;
+        }
+        .status-chip.live { border-color: rgba(14,203,129,0.5); color: var(--binance-green); }
+        .status-chip.warn { border-color: rgba(240,185,11,0.5); color: var(--binance-yellow); }
+        .status-chip.error { border-color: rgba(246,70,93,0.55); color: var(--binance-red); }
+        .bias-card {
+            border: 1px solid var(--binance-border);
+            border-radius: 12px;
+            background: linear-gradient(165deg, rgba(30,35,41,0.95) 0%, rgba(22,26,30,0.95) 100%);
+            padding: 0.7rem 0.9rem;
+            margin-bottom: 0.55rem;
+        }
+        .bias-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .bias-pill {
+            border-radius: 999px;
+            font-size: 0.86rem;
+            font-weight: 700;
+            padding: 0.18rem 0.75rem;
+        }
+        .bias-pill.long { background: rgba(14,203,129,0.15); color: var(--binance-green); border: 1px solid rgba(14,203,129,0.45); }
+        .bias-pill.short { background: rgba(246,70,93,0.14); color: var(--binance-red); border: 1px solid rgba(246,70,93,0.45); }
+        .bias-pill.wait { background: rgba(132,142,156,0.14); color: #b7bdc6; border: 1px solid rgba(132,142,156,0.45); }
+        .bias-conf {
+            color: var(--binance-yellow);
+            font-size: 0.9rem;
+            font-weight: 700;
+        }
+        .news-line {
+            padding: 0.45rem 0.25rem;
+            border-bottom: 1px solid rgba(43,49,57,0.7);
+            line-height: 1.35;
+        }
+        .news-line:last-child { border-bottom: none; }
+        .news-meta {
+            color: var(--binance-muted);
+            font-size: 0.72rem;
+        }
+        .news-link {
+            color: #eaecef !important;
+            text-decoration: none;
+            font-size: 0.85rem;
+        }
+        .news-link:hover { color: var(--binance-yellow) !important; text-decoration: underline; }
+        details[data-testid="stExpander"] {
+            border: 1px solid var(--binance-border) !important;
+            border-radius: 10px !important;
+            background: rgba(30,35,41,0.78) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None = None) -> None:
     chart_df = df.tail(120)
     if chart_df.empty:
@@ -337,18 +509,22 @@ def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None 
             low=chart_df["low"],
             close=chart_df["close"],
             name="가격",
+            increasing_line_color="#0ecb81",
+            increasing_fillcolor="#0ecb81",
+            decreasing_line_color="#f6465d",
+            decreasing_fillcolor="#f6465d",
         )
     )
 
     if pattern_overlays:
         top_pattern = pattern_overlays[0]
-        direction_color = "#22c55e" if top_pattern.bias == BIAS_LONG else "#ef4444"
+        direction_color = "#0ecb81" if top_pattern.bias == BIAS_LONG else "#f6465d"
         fig.add_trace(
             go.Scatter(
                 x=[x_start, x_end],
                 y=[top_pattern.entry, top_pattern.entry],
                 mode="lines",
-                line=dict(color=direction_color, dash="dash", width=1.8),
+                line=dict(color="#f0b90b", dash="dash", width=1.8),
                 name="패턴 진입",
                 showlegend=False,
             )
@@ -358,7 +534,7 @@ def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None 
                 x=[x_start, x_end],
                 y=[top_pattern.stop, top_pattern.stop],
                 mode="lines",
-                line=dict(color="#f97316", dash="dot", width=1.4),
+                line=dict(color="#f6465d", dash="dot", width=1.4),
                 name="패턴 손절",
                 showlegend=False,
             )
@@ -368,7 +544,7 @@ def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None 
                 x=[x_start, x_end],
                 y=[top_pattern.target, top_pattern.target],
                 mode="lines",
-                line=dict(color="#38bdf8", dash="dot", width=1.4),
+                line=dict(color="#0ecb81", dash="dot", width=1.4),
                 name="패턴 목표",
                 showlegend=False,
             )
@@ -384,16 +560,33 @@ def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None 
             xanchor="left",
             yanchor="bottom",
             font=dict(color=direction_color, size=11),
-            bgcolor="rgba(255,255,255,0.75)",
+            bgcolor="rgba(30, 35, 41, 0.88)",
+            bordercolor="#2b3139",
+            borderwidth=1,
         )
     fig.update_layout(
         margin=dict(l=10, r=10, t=10, b=10),
         height=520,
         xaxis_rangeslider_visible=False,
+        paper_bgcolor="#0b0e11",
+        plot_bgcolor="#0b0e11",
+        font=dict(color="#eaecef"),
     )
     fig.update_xaxes(
         range=[x_start, x_end],
         fixedrange=True,
+        showgrid=True,
+        gridcolor="#1f2733",
+        linecolor="#2b3139",
+        zeroline=False,
+        color="#b7bdc6",
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="#1f2733",
+        linecolor="#2b3139",
+        zeroline=False,
+        color="#b7bdc6",
     )
 
     st.plotly_chart(
@@ -408,9 +601,17 @@ def render_chart(df: pd.DataFrame, pattern_overlays: list[PatternSignal] | None 
 
 def render_bias(result: BiasResult) -> None:
     bias_label = bias_to_korean(result.bias)
-    color = {BIAS_LONG: "green", BIAS_SHORT: "red", BIAS_NO_TRADE: "gray"}.get(result.bias, "gray")
+    pill_cls = {BIAS_LONG: "long", BIAS_SHORT: "short", BIAS_NO_TRADE: "wait"}.get(result.bias, "wait")
     st.markdown(
-        f"### 방향성: :{color}[{bias_label}]  |  신뢰도: **{result.confidence}%**",
+        (
+            "<div class='bias-card'>"
+            "<div class='bias-head'>"
+            f"<span class='bias-pill {pill_cls}'>방향성 {bias_label}</span>"
+            f"<span class='bias-conf'>신뢰도 {result.confidence}%</span>"
+            "</div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
     )
     if result.bias == BIAS_NO_TRADE:
         st.caption("※ 이 수치는 '관망 유지 신뢰도'입니다. 방향성 진입 신호 강도와는 별개입니다.")
@@ -433,72 +634,85 @@ def render_trading_checklist(timeframe_signals: list[Any]) -> None:
         st.write("- 체크리스트 데이터가 없습니다.")
         return
     for signal in timeframe_signals:
-        st.write(
-            f"- {signal.timeframe}: ADX {signal.adx:.1f}, ATR% {signal.atr_pct:.2f}, "
-            f"EMA200 {signal.ema_trend:.2f}, 판정 {bias_to_korean(signal.bias)}"
+        header = (
+            f"{signal.timeframe} | 판정 {bias_to_korean(signal.bias)} | "
+            f"ADX {signal.adx:.1f} | ATR% {signal.atr_pct:.2f}"
         )
-        if getattr(signal, "pattern_summaries", None):
-            st.write(f"  - 대표 패턴: {signal.pattern_summaries[0]}")
-        else:
-            st.write("  - 대표 패턴: 감지 없음")
+        with st.expander(header, expanded=(signal.timeframe == "15m")):
+            st.write(f"- EMA200: {signal.ema_trend:.2f}")
+            st.write(f"- 롱 점수: {signal.long_score} / 숏 점수: {signal.short_score}")
+            if getattr(signal, "pattern_summaries", None):
+                st.write(f"- 대표 패턴: {signal.pattern_summaries[0]}")
+            else:
+                st.write("- 대표 패턴: 감지 없음")
 
 
 def main() -> None:
     st.set_page_config(page_title="바이낸스 선물 실시간 방향성", layout="wide")
     st_autorefresh(interval=1000, key="ui_autorefresh")
-
-    st.title("바이낸스 선물 실시간 방향성 대시보드")
+    inject_binance_theme()
+    st.markdown('<div class="binance-title">BINANCE Futures Signal Terminal</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="binance-subtitle">실시간 시세 · 패턴 오버레이 · 멀티 타임프레임 합의 기반 보조 신호</div>',
+        unsafe_allow_html=True,
+    )
 
     default_symbol = os.getenv("SYMBOL", "BTCUSDT")
     default_interval = os.getenv("INTERVAL", "15m")
     col_left, col_right = st.columns([2, 1])
 
     with col_right:
-        symbol = st.text_input("심볼", value=default_symbol).upper().strip()
-        interval = st.selectbox(
-            "캔들 주기",
-            options=["1m", "3m", "5m", "15m", "30m", "1h", "4h"],
-            index=["1m", "3m", "5m", "15m", "30m", "1h", "4h"].index(default_interval)
-            if default_interval in ["1m", "3m", "5m", "15m", "30m", "1h", "4h"]
-            else 3,
-        )
+        with st.container(border=True):
+            st.markdown("#### 거래 설정")
+            symbol = st.text_input("심볼", value=default_symbol).upper().strip()
+            interval = st.selectbox(
+                "캔들 주기",
+                options=["1m", "3m", "5m", "15m", "30m", "1h", "4h"],
+                index=["1m", "3m", "5m", "15m", "30m", "1h", "4h"].index(default_interval)
+                if default_interval in ["1m", "3m", "5m", "15m", "30m", "1h", "4h"]
+                else 3,
+            )
+            st.caption("화면은 1초마다 갱신되고, 뉴스는 10초마다 자동 갱신됩니다.")
+            manual_reconnect_requested = st.button("웹소켓 수동 재연결", use_container_width=True)
+
         news_items, news_error = fetch_live_news(symbol=symbol, limit=7)
         auto_news_text = " ".join(article["title"] for article in news_items)
         auto_news_score, auto_news_reason = infer_news_sentiment_from_text(auto_news_text)
 
-        st.markdown("#### 뉴스 감성 반영")
-        news_input = st.text_area(
-            "수동 뉴스/칼럼 입력 (선택)",
-            placeholder="비워두면 아래 실시간 뉴스 제목으로 자동 감성 점수를 계산합니다.",
-            height=90,
-        )
-        if news_input.strip():
-            news_score, news_reason = infer_news_sentiment_from_text(news_input)
-            st.caption(f"수동 입력 반영: {news_reason} / 점수 {news_score:+.2f}")
-        else:
-            news_score = auto_news_score
-            if news_error:
-                st.caption("자동 뉴스 점수 계산 실패: 뉴스 수집 오류")
-            elif news_score is None:
-                st.caption("자동 뉴스 점수 계산 대기 중")
+        with st.container(border=True):
+            st.markdown("#### 뉴스 감성 반영")
+            news_input = st.text_area(
+                "수동 뉴스/칼럼 입력 (선택)",
+                placeholder="비워두면 아래 실시간 뉴스 제목으로 자동 감성 점수를 계산합니다.",
+                height=90,
+            )
+            if news_input.strip():
+                news_score, news_reason = infer_news_sentiment_from_text(news_input)
+                st.caption(f"수동 입력 반영: {news_reason} / 점수 {news_score:+.2f}")
             else:
-                st.caption(f"자동 뉴스 반영: {auto_news_reason} / 점수 {news_score:+.2f}")
+                news_score = auto_news_score
+                if news_error:
+                    st.caption("자동 뉴스 점수 계산 실패: 뉴스 수집 오류")
+                elif news_score is None:
+                    st.caption("자동 뉴스 점수 계산 대기 중")
+                else:
+                    st.caption(f"자동 뉴스 반영: {auto_news_reason} / 점수 {news_score:+.2f}")
 
-        st.caption("화면은 1초마다 갱신되고, 뉴스는 10초마다 자동 갱신됩니다.")
-
-        st.markdown("---")
-        st.markdown("#### 실시간 코인 뉴스")
-        if news_error:
-            st.info(news_error)
-        elif not news_items:
-            st.info("표시할 뉴스가 없습니다.")
-        else:
-            for article in news_items:
-                st.markdown(
-                    f"- [{article['title']}]({article['link']})  \n"
-                    f"  `{article['source']}` · `{article['pub_date']}`"
-                )
-        manual_reconnect_requested = st.button("웹소켓 수동 재연결", use_container_width=True)
+        with st.container(border=True):
+            st.markdown("#### 실시간 코인 뉴스")
+            if news_error:
+                st.info(news_error)
+            elif not news_items:
+                st.info("표시할 뉴스가 없습니다.")
+            else:
+                for article in news_items:
+                    st.markdown(
+                        "<div class='news-line'>"
+                        f"<a class='news-link' href='{article['link']}' target='_blank'>{article['title']}</a>"
+                        f"<div class='news-meta'>{article['source']} · {article['pub_date']}</div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
 
     stream = get_or_create_stream(symbol)
     if manual_reconnect_requested:
@@ -526,8 +740,9 @@ def main() -> None:
         compute_timeframe_signal(df, tf) for tf, df in timeframe_data.items()
     ]
     signal_by_timeframe = {signal.timeframe: signal for signal in timeframe_signals}
-    if interval in signal_by_timeframe:
-        chart_patterns = signal_by_timeframe[interval].pattern_signals
+    selected_signal = signal_by_timeframe.get(interval)
+    if selected_signal is not None:
+        chart_patterns = getattr(selected_signal, "pattern_signals", None) or detect_chart_patterns(candles)
     else:
         chart_patterns = detect_chart_patterns(candles)
 
@@ -554,6 +769,24 @@ def main() -> None:
     bias = st.session_state["confirmed_bias"]
 
     with col_left:
+        status_cls = {
+            "LIVE": "live",
+            "CONNECTING": "warn",
+            "STALE": "warn",
+            "RECONNECTING": "error",
+        }.get(snapshot.stream_status, "warn")
+        st.markdown(
+            (
+                "<div class='status-strip'>"
+                f"<span class='status-chip {status_cls}'>WS {snapshot.stream_status}</span>"
+                f"<span class='status-chip'>심볼 {symbol}</span>"
+                f"<span class='status-chip'>주기 {interval}</span>"
+                f"<span class='status-chip'>자동갱신 1s</span>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+
         metric_cols = st.columns(6)
         metric_cols[0].metric("현재가", f"{snapshot.latest_price:.2f}" if snapshot.latest_price else "-")
         metric_cols[1].metric("최근 10초 체결 수", snapshot.trade_count_10s)
