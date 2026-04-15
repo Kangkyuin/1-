@@ -386,6 +386,10 @@ def render_trading_checklist(timeframe_signals: list[Any]) -> None:
             f"- {signal.timeframe}: ADX {signal.adx:.1f}, ATR% {signal.atr_pct:.2f}, "
             f"EMA200 {signal.ema_trend:.2f}, 판정 {bias_to_korean(signal.bias)}"
         )
+        if getattr(signal, "pattern_summaries", None):
+            st.write(f"  - 대표 패턴: {signal.pattern_summaries[0]}")
+        else:
+            st.write("  - 대표 패턴: 감지 없음")
 
 
 def main() -> None:
