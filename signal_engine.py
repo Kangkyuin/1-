@@ -5,6 +5,10 @@ from dataclasses import dataclass
 import pandas as pd
 import ta
 
+BIAS_LONG = "LONG"
+BIAS_SHORT = "SHORT"
+BIAS_NO_TRADE = "NO-TRADE"
+
 
 @dataclass
 class BiasResult:
@@ -18,10 +22,18 @@ class BiasResult:
     rsi: float
 
 
+def bias_to_korean(bias: str) -> str:
+    if bias == BIAS_LONG:
+        return "롱"
+    if bias == BIAS_SHORT:
+        return "숏"
+    return "관망"
+
+
 def compute_bias(df: pd.DataFrame) -> BiasResult:
     if len(df) < 60:
         return BiasResult(
-            bias="NO-TRADE",
+            bias=BIAS_NO_TRADE,
             confidence=0,
             long_score=0,
             short_score=0,
@@ -69,11 +81,11 @@ def compute_bias(df: pd.DataFrame) -> BiasResult:
     confidence = int(min(100, round((score_gap / total) * 100)))
 
     if long_score >= short_score + 2:
-        bias = "LONG"
+        bias = BIAS_LONG
     elif short_score >= long_score + 2:
-        bias = "SHORT"
+        bias = BIAS_SHORT
     else:
-        bias = "NO-TRADE"
+        bias = BIAS_NO_TRADE
 
     return BiasResult(
         bias=bias,

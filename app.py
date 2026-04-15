@@ -17,7 +17,14 @@ from binance.client import Client
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
 
-from signal_engine import BiasResult, compute_bias
+from signal_engine import (
+    BIAS_LONG,
+    BIAS_NO_TRADE,
+    BIAS_SHORT,
+    BiasResult,
+    bias_to_korean,
+    compute_bias,
+)
 
 load_dotenv()
 
@@ -32,7 +39,7 @@ class StreamSnapshot:
 
 
 class BinanceAggTradeStream:
-    """Consumes Binance futures aggTrade stream in a background thread."""
+    """바이낸스 선물 aggTrade 스트림을 백그라운드에서 수신합니다."""
 
     def __init__(self, symbol: str) -> None:
         self.symbol = symbol.lower()
@@ -171,7 +178,7 @@ def render_chart(df: pd.DataFrame) -> None:
             high=chart_df["high"],
             low=chart_df["low"],
             close=chart_df["close"],
-            name="Price",
+            name="가격",
         )
     )
     fig.update_layout(
@@ -183,33 +190,34 @@ def render_chart(df: pd.DataFrame) -> None:
 
 
 def render_bias(result: BiasResult) -> None:
-    color = {"LONG": "green", "SHORT": "red", "NO-TRADE": "gray"}.get(result.bias, "gray")
+    bias_label = bias_to_korean(result.bias)
+    color = {BIAS_LONG: "green", BIAS_SHORT: "red", BIAS_NO_TRADE: "gray"}.get(result.bias, "gray")
     st.markdown(
-        f"### Direction: :{color}[{result.bias}]  |  Confidence: **{result.confidence}%**",
+        f"### 방향성: :{color}[{bias_label}]  |  신뢰도: **{result.confidence}%**",
     )
-    st.write(f"- Long score: {result.long_score}")
-    st.write(f"- Short score: {result.short_score}")
+    st.write(f"- 롱 점수: {result.long_score}")
+    st.write(f"- 숏 점수: {result.short_score}")
     st.write(f"- EMA20: {result.ema_fast:.2f} / EMA50: {result.ema_slow:.2f}")
     st.write(f"- RSI14: {result.rsi:.2f}")
-    st.write("#### Reasoning")
+    st.write("#### 판단 근거")
     for reason in result.reasons:
         st.write(f"- {reason}")
 
 
 def main() -> None:
-    st.set_page_config(page_title="Binance Futures Live Bias", layout="wide")
+    st.set_page_config(page_title="바이낸스 선물 실시간 방향성", layout="wide")
     st_autorefresh(interval=1000, key="ui_autorefresh")
 
-    st.title("Binance Futures Live Bias Dashboard")
+    st.title("바이낸스 선물 실시간 방향성 대시보드")
 
     default_symbol = os.getenv("SYMBOL", "BTCUSDT")
     default_interval = os.getenv("INTERVAL", "15m")
     col_left, col_right = st.columns([2, 1])
 
     with col_right:
-        symbol = st.text_input("Symbol", value=default_symbol).upper().strip()
+        symbol = st.text_input("심볼", value=default_symbol).upper().strip()
         interval = st.selectbox(
-            "Kline interval",
+            "캔들 주기",
             options=["1m", "3m", "5m", "15m", "30m", "1h", "4h"],
             index=["1m", "3m", "5m", "15m", "30m", "1h", "4h"].index(default_interval)
             if default_interval in ["1m", "3m", "5m", "15m", "30m", "1h", "4h"]
@@ -224,24 +232,24 @@ def main() -> None:
 
     with col_left:
         metric_cols = st.columns(4)
-        metric_cols[0].metric("Latest Price", f"{snapshot.latest_price:.2f}" if snapshot.latest_price else "-")
-        metric_cols[1].metric("Trades (10s)", snapshot.trade_count_10s)
+        metric_cols[0].metric("현재가", f"{snapshot.latest_price:.2f}" if snapshot.latest_price else "-")
+        metric_cols[1].metric("최근 10초 체결 수", snapshot.trade_count_10s)
         metric_cols[2].metric(
-            "Move (10s)",
+            "최근 10초 변동",
             f"{snapshot.move_10s_pct:+.3f}%"
             if snapshot.move_10s_pct is not None
             else "-",
         )
-        metric_cols[3].metric("WebSocket", "LIVE" if snapshot.stream_alive else "RECONNECTING")
+        metric_cols[3].metric("웹소켓 상태", "정상" if snapshot.stream_alive else "재연결 중")
 
         render_chart(candles)
         render_bias(bias)
 
     if snapshot.latest_event_time is not None:
-        st.caption(f"Last trade event (UTC): {snapshot.latest_event_time.isoformat()}")
+        st.caption(f"마지막 체결 이벤트 시각 (UTC): {snapshot.latest_event_time.isoformat()}")
 
     st.warning(
-        "이 도구는 투자 참고용입니다. 실제 주문 전 손절/손실한도를 항상 먼저 설정하세요."
+        "이 도구는 참고용 신호입니다. 실제 주문 전 손절/손실 한도를 반드시 먼저 설정하세요."
     )
 
 
