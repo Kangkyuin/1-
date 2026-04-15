@@ -252,6 +252,20 @@ def build_news_query(symbol: str) -> str:
     return f"({main_keyword}) (crypto OR cryptocurrency OR 코인)"
 
 
+def build_news_query_global(symbol: str) -> str:
+    base = extract_base_asset(symbol.upper())
+    symbol_alias = {
+        "BTC": "bitcoin OR btc",
+        "ETH": "ethereum OR eth",
+        "SOL": "solana OR sol",
+        "XRP": "xrp OR ripple",
+        "DOGE": "dogecoin OR doge",
+        "ADA": "cardano OR ada",
+    }
+    main_keyword = symbol_alias.get(base, f"{base} OR {base.lower()} coin")
+    return f"({main_keyword}) (crypto OR cryptocurrency)"
+
+
 def format_pubdate_kst(pub_date: str) -> str:
     if not pub_date:
         return "-"
@@ -293,6 +307,72 @@ def fetch_live_news(symbol: str, limit: int = 8) -> tuple[list[dict[str, str]], 
         return items, None
     except Exception as exc:
         return [], f"뉴스를 불러오지 못했습니다: {exc}"
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_global_news(symbol: str, limit: int = 8) -> tuple[list[dict[str, str]], str | None]:
+    query = build_news_query(symbol)
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
+    )
+    try:
+        with urlopen(url, timeout=8) as response:
+            raw_xml = response.read()
+        root = ET.fromstring(raw_xml)
+        items: list[dict[str, str]] = []
+        for item in root.findall("./channel/item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            source = (item.findtext("source") or "Unknown source").strip()
+            pub_date = format_pubdate_kst((item.findtext("pubDate") or "").strip())
+            if title and link:
+                items.append(
+                    {
+                        "title": title,
+                        "link": link,
+                        "source": source,
+                        "pub_date": pub_date,
+                    }
+                )
+            if len(items) >= limit:
+                break
+        return items, None
+    except Exception as exc:
+        return [], f"해외 뉴스를 불러오지 못했습니다: {exc}"
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_live_global_news(symbol: str, limit: int = 8) -> tuple[list[dict[str, str]], str | None]:
+    query = build_news_query_global(symbol)
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={quote_plus(query)}&hl=en&gl=US&ceid=US:en"
+    )
+    try:
+        with urlopen(url, timeout=8) as response:
+            raw_xml = response.read()
+        root = ET.fromstring(raw_xml)
+        items: list[dict[str, str]] = []
+        for item in root.findall("./channel/item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            source = (item.findtext("source") or "Unknown source").strip()
+            pub_date = format_pubdate_kst((item.findtext("pubDate") or "").strip())
+            if title and link:
+                items.append(
+                    {
+                        "title": title,
+                        "link": link,
+                        "source": source,
+                        "pub_date": pub_date,
+                    }
+                )
+            if len(items) >= limit:
+                break
+        return items, None
+    except Exception as exc:
+        return [], f"해외 뉴스를 불러오지 못했습니다: {exc}"
 
 
 def get_or_create_stream(symbol: str) -> BinanceAggTradeStream:
@@ -946,8 +1026,12 @@ def main() -> None:
             st.caption("화면은 1초마다 갱신되고, 뉴스는 10초마다 자동 갱신됩니다.")
             manual_reconnect_requested = st.button("웹소켓 수동 재연결", use_container_width=True)
 
-        news_items, news_error = fetch_live_news(symbol=symbol, limit=7)
-        auto_news_text = " ".join(article["title"] for article in news_items)
+        kr_news_items, kr_news_error = fetch_live_news(symbol=symbol, limit=7, locale="ko")
+        global_news_items, global_news_error = fetch_live_news(symbol=symbol, limit=7, locale="en")
+        all_news_titles = [article["title"] for article in kr_news_items] + [
+            article["title"] for article in global_news_items
+        ]
+        auto_news_text = " ".join(all_news_titles)
         auto_news_score, auto_news_reason = infer_news_sentiment_from_text(auto_news_text)
 
         with st.container(border=True):
@@ -962,7 +1046,7 @@ def main() -> None:
                 st.caption(f"수동 입력 반영: {news_reason} / 점수 {news_score:+.2f}")
             else:
                 news_score = auto_news_score
-                if news_error:
+                if kr_news_error and global_news_error:
                     st.caption("자동 뉴스 점수 계산 실패: 뉴스 수집 오류")
                 elif news_score is None:
                     st.caption("자동 뉴스 점수 계산 대기 중")
@@ -970,20 +1054,36 @@ def main() -> None:
                     st.caption(f"자동 뉴스 반영: {auto_news_reason} / 점수 {news_score:+.2f}")
 
         with st.container(border=True):
-            st.markdown("#### 실시간 코인 뉴스")
-            if news_error:
-                st.info(news_error)
-            elif not news_items:
-                st.info("표시할 뉴스가 없습니다.")
-            else:
-                for article in news_items:
-                    st.markdown(
-                        "<div class='news-line'>"
-                        f"<a class='news-link' href='{article['link']}' target='_blank'>{article['title']}</a>"
-                        f"<div class='news-meta'>{article['source']} · {article['pub_date']}</div>"
-                        "</div>",
-                        unsafe_allow_html=True,
-                    )
+            st.markdown("#### 실시간 코인 뉴스 (국내/해외)")
+            tab_kr, tab_global = st.tabs(["국내", "해외"])
+            with tab_kr:
+                if kr_news_error:
+                    st.info(kr_news_error)
+                elif not kr_news_items:
+                    st.info("표시할 국내 뉴스가 없습니다.")
+                else:
+                    for article in kr_news_items:
+                        st.markdown(
+                            "<div class='news-line'>"
+                            f"<a class='news-link' href='{article['link']}' target='_blank'>{article['title']}</a>"
+                            f"<div class='news-meta'>{article['source']} · {article['pub_date']}</div>"
+                            "</div>",
+                            unsafe_allow_html=True,
+                        )
+            with tab_global:
+                if global_news_error:
+                    st.info(global_news_error)
+                elif not global_news_items:
+                    st.info("표시할 해외 뉴스가 없습니다.")
+                else:
+                    for article in global_news_items:
+                        st.markdown(
+                            "<div class='news-line'>"
+                            f"<a class='news-link' href='{article['link']}' target='_blank'>{article['title']}</a>"
+                            f"<div class='news-meta'>{article['source']} · {article['pub_date']}</div>"
+                            "</div>",
+                            unsafe_allow_html=True,
+                        )
 
     stream = get_or_create_stream(symbol)
     if manual_reconnect_requested:
