@@ -227,9 +227,29 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         bias = BIAS_NO_TRADE
 
     if bias == BIAS_NO_TRADE:
-        score_gap = abs(long_score - short_score)
-        confidence = int(min(60, round((score_gap / 7) * 70)))
-        reasons.append("엄격 진입 조건 미충족 -> 관망")
+        # 관망은 "방향성 부족"의 확신을 의미하므로 별도 신뢰도 계산을 사용한다.
+        trend_conflict = not trend_long and not trend_short
+        breakout_missing = not long_breakout and not short_breakout
+        momentum_neutral = not long_momentum and not short_momentum
+        directional_strength = max(long_score, short_score) / 7
+
+        no_trade_strength = 0.0
+        no_trade_strength += 0.30 if trend_conflict else 0.0
+        no_trade_strength += 0.25 if not adx_ok else 0.0
+        no_trade_strength += 0.20 if breakout_missing else 0.0
+        no_trade_strength += 0.15 if momentum_neutral else 0.0
+        no_trade_strength += 0.10 if not volume_ok else 0.0
+
+        confidence = int(
+            max(
+                20,
+                min(
+                    95,
+                    round((no_trade_strength * 100 * 0.75) + ((1 - directional_strength) * 100 * 0.25)),
+                ),
+            )
+        )
+        reasons.append(f"엄격 진입 조건 미충족 -> 관망 (관망 강도 {no_trade_strength:.2f})")
     else:
         directional_score = max(long_score, short_score)
         confidence = int(
@@ -350,7 +370,21 @@ def combine_signals(
         bias = BIAS_SHORT
     else:
         bias = BIAS_NO_TRADE
-    confidence = int(min(100, round(base_confidence if bias != BIAS_NO_TRADE else min(base_confidence, 55))))
+    if bias == BIAS_NO_TRADE:
+        neutrality = 1 - min(1.0, gap / total)
+        consensus_balance = 1 - (abs(long_consensus - short_consensus) / 3)
+        gate_block_strength = 1.0 if (not long_gate and not short_gate) else 0.4
+        confidence = int(
+            max(
+                20,
+                min(
+                    95,
+                    round(35 + (neutrality * 30) + (consensus_balance * 20) + (gate_block_strength * 10)),
+                ),
+            )
+        )
+    else:
+        confidence = int(min(100, round(base_confidence)))
 
     anchor = next((s for s in signals if s.timeframe == "15m"), signals[0])
     reasons.append(
