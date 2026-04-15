@@ -17,6 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import websocket
+import numpy as np
 from binance.client import Client
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
