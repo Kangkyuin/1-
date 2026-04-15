@@ -35,7 +35,10 @@ class StreamSnapshot:
     latest_event_time: datetime | None
     trade_count_10s: int
     move_10s_pct: float | None
-    stream_alive: bool
+    stream_connected: bool
+    stream_status: str
+    message_age_sec: float | None
+    reconnect_count: int
 
 
 class BinanceAggTradeStream:
@@ -46,6 +49,8 @@ class BinanceAggTradeStream:
         self._running = False
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._connected = False
+        self._reconnect_count = 0
         self._latest_price: float | None = None
         self._latest_event_time: datetime | None = None
         self._trades: deque[tuple[datetime, float]] = deque(maxlen=4000)
@@ -65,13 +70,20 @@ class BinanceAggTradeStream:
             stream_url = f"wss://fstream.binance.com/ws/{self.symbol}@aggTrade"
             ws = websocket.WebSocketApp(
                 stream_url,
+                on_open=self._on_open,
                 on_message=self._on_message,
                 on_error=self._on_error,
                 on_close=self._on_close,
             )
             ws.run_forever(ping_interval=20, ping_timeout=8)
             if self._running:
+                with self._lock:
+                    self._reconnect_count += 1
                 time.sleep(2)
+
+    def _on_open(self, _ws: websocket.WebSocketApp) -> None:
+        with self._lock:
+            self._connected = True
 
     def _on_message(self, _ws: websocket.WebSocketApp, message: str) -> None:
         payload: dict[str, Any] = json.loads(message)
@@ -86,8 +98,8 @@ class BinanceAggTradeStream:
             self._trades.append((event_time, price))
 
     def _on_error(self, _ws: websocket.WebSocketApp, _error: Any) -> None:
-        # Auto-reconnect is handled by _run_loop.
-        return
+        with self._lock:
+            self._connected = False
 
     def _on_close(
         self,
@@ -95,26 +107,45 @@ class BinanceAggTradeStream:
         _close_status_code: int | None,
         _close_msg: str | None,
     ) -> None:
-        return
+        with self._lock:
+            self._connected = False
 
     def snapshot(self) -> StreamSnapshot:
         now = datetime.now(timezone.utc)
         with self._lock:
             latest_price = self._latest_price
             latest_event_time = self._latest_event_time
+            connected = self._connected
+            reconnect_count = self._reconnect_count
             recent = [trade for trade in self._trades if (now - trade[0]).total_seconds() <= 10]
 
         move_10s_pct: float | None = None
         if len(recent) >= 2 and recent[0][1] > 0:
             move_10s_pct = ((recent[-1][1] - recent[0][1]) / recent[0][1]) * 100
 
-        stream_alive = latest_event_time is not None and (now - latest_event_time).total_seconds() <= 6
+        message_age_sec: float | None = None
+        if latest_event_time is not None:
+            message_age_sec = (now - latest_event_time).total_seconds()
+
+        if connected:
+            if message_age_sec is None:
+                stream_status = "CONNECTING"
+            elif message_age_sec <= 20:
+                stream_status = "LIVE"
+            else:
+                stream_status = "STALE"
+        else:
+            stream_status = "RECONNECTING"
+
         return StreamSnapshot(
             latest_price=latest_price,
             latest_event_time=latest_event_time,
             trade_count_10s=len(recent),
             move_10s_pct=move_10s_pct,
-            stream_alive=stream_alive,
+            stream_connected=connected,
+            stream_status=stream_status,
+            message_age_sec=message_age_sec,
+            reconnect_count=reconnect_count,
         )
 
 
@@ -263,13 +294,22 @@ def main() -> None:
             if snapshot.move_10s_pct is not None
             else "-",
         )
-        metric_cols[3].metric("웹소켓 상태", "정상" if snapshot.stream_alive else "재연결 중")
+        status_label = {
+            "LIVE": "정상",
+            "CONNECTING": "연결 중",
+            "STALE": "데이터 지연",
+            "RECONNECTING": "재연결 중",
+        }.get(snapshot.stream_status, "확인 필요")
+        metric_cols[3].metric("웹소켓 상태", status_label, f"재연결 {snapshot.reconnect_count}회")
 
         render_chart(candles)
         render_bias(bias)
 
     if snapshot.latest_event_time is not None:
-        st.caption(f"마지막 체결 이벤트 시각 (UTC): {snapshot.latest_event_time.isoformat()}")
+        age_text = f"{snapshot.message_age_sec:.1f}초 전" if snapshot.message_age_sec is not None else "-"
+        st.caption(
+            f"마지막 체결 이벤트 시각 (UTC): {snapshot.latest_event_time.isoformat()} / 데이터 지연: {age_text}"
+        )
 
     st.warning(
         "이 도구는 참고용 신호입니다. 실제 주문 전 손절/손실 한도를 반드시 먼저 설정하세요."
