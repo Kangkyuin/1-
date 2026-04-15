@@ -170,6 +170,17 @@ def get_or_create_stream(symbol: str) -> BinanceAggTradeStream:
 
 def render_chart(df: pd.DataFrame) -> None:
     chart_df = df.tail(120)
+    if chart_df.empty:
+        st.info("표시할 캔들 데이터가 없습니다.")
+        return
+
+    if len(chart_df) >= 2:
+        candle_step = chart_df["open_time"].iloc[-1] - chart_df["open_time"].iloc[-2]
+    else:
+        candle_step = pd.Timedelta(minutes=1)
+    x_start = chart_df["open_time"].iloc[0]
+    x_end = chart_df["open_time"].iloc[-1] + (candle_step * 2)
+
     fig = go.Figure()
     fig.add_trace(
         go.Candlestick(
@@ -186,7 +197,19 @@ def render_chart(df: pd.DataFrame) -> None:
         height=520,
         xaxis_rangeslider_visible=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_xaxes(
+        range=[x_start, x_end],
+        fixedrange=True,
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            "displaylogo": False,
+            "modeBarButtonsToRemove": ["pan2d"],
+        },
+    )
 
 
 def render_bias(result: BiasResult) -> None:
