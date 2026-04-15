@@ -61,6 +61,7 @@ class BinanceAggTradeStream:
         self._reconnect_count = 0
         self._latest_price: float | None = None
         self._latest_event_time: datetime | None = None
+        self._latest_receive_time: datetime | None = None
         self._trades: deque[tuple[datetime, float]] = deque(maxlen=4000)
         self._orderflow: deque[tuple[datetime, bool]] = deque(maxlen=12000)
 
@@ -100,11 +101,13 @@ class BinanceAggTradeStream:
             return
 
         event_time = datetime.fromtimestamp(payload["E"] / 1000, tz=timezone.utc)
+        receive_time = datetime.now(timezone.utc)
         price = float(payload["p"])
         is_buyer_maker = bool(payload.get("m", False))
         with self._lock:
             self._latest_price = price
             self._latest_event_time = event_time
+            self._latest_receive_time = receive_time
             self._trades.append((event_time, price))
             self._orderflow.append((event_time, is_buyer_maker))
 
@@ -126,6 +129,7 @@ class BinanceAggTradeStream:
         with self._lock:
             latest_price = self._latest_price
             latest_event_time = self._latest_event_time
+            latest_receive_time = self._latest_receive_time
             connected = self._connected
             reconnect_count = self._reconnect_count
             recent = [trade for trade in self._trades if (now - trade[0]).total_seconds() <= 10]
@@ -136,8 +140,8 @@ class BinanceAggTradeStream:
             move_10s_pct = ((recent[-1][1] - recent[0][1]) / recent[0][1]) * 100
 
         message_age_sec: float | None = None
-        if latest_event_time is not None:
-            message_age_sec = (now - latest_event_time).total_seconds()
+        if latest_receive_time is not None:
+            message_age_sec = (now - latest_receive_time).total_seconds()
 
         buy_ratio_30s: float | None = None
         sell_ratio_30s: float | None = None
@@ -151,7 +155,7 @@ class BinanceAggTradeStream:
         if connected:
             if message_age_sec is None:
                 stream_status = "CONNECTING"
-            elif message_age_sec <= 20:
+            elif message_age_sec <= 30:
                 stream_status = "LIVE"
             else:
                 stream_status = "STALE"
@@ -296,6 +300,19 @@ def get_or_create_stream(symbol: str) -> BinanceAggTradeStream:
     return stream
 
 
+def restart_stream(symbol: str) -> BinanceAggTradeStream:
+    existing = st.session_state.get("agg_stream")
+    if existing:
+        existing.stop()
+
+    stream = BinanceAggTradeStream(symbol=symbol)
+    stream.start()
+    st.session_state["agg_stream"] = stream
+    st.session_state["agg_stream_symbol"] = symbol
+    st.session_state["last_stream_restart_at"] = datetime.now(timezone.utc)
+    return stream
+
+
 def render_chart(df: pd.DataFrame) -> None:
     chart_df = df.tail(120)
     if chart_df.empty:
@@ -414,9 +431,28 @@ def main() -> None:
                     f"- [{article['title']}]({article['link']})  \n"
                     f"  `{article['source']}` · `{article['pub_date']}`"
                 )
+        manual_reconnect_requested = st.button("웹소켓 수동 재연결", use_container_width=True)
 
     stream = get_or_create_stream(symbol)
+    if manual_reconnect_requested:
+        stream = restart_stream(symbol)
+        st.success("웹소켓 재연결을 시작했습니다.")
+
     snapshot = stream.snapshot()
+    if (
+        snapshot.stream_status == "STALE"
+        and snapshot.message_age_sec is not None
+        and snapshot.message_age_sec >= 45
+    ):
+        last_restart_at: datetime | None = st.session_state.get("last_stream_restart_at")
+        can_restart = (
+            last_restart_at is None
+            or (datetime.now(timezone.utc) - last_restart_at).total_seconds() >= 30
+        )
+        if can_restart:
+            stream = restart_stream(symbol)
+            snapshot = stream.snapshot()
+
     candles = fetch_futures_klines(symbol=symbol, interval=interval, limit=350)
     timeframe_data = fetch_multi_timeframes(symbol=symbol)
     timeframe_signals = [
@@ -473,6 +509,11 @@ def main() -> None:
             "RECONNECTING": "재연결 중",
         }.get(snapshot.stream_status, "확인 필요")
         metric_cols[5].metric("웹소켓 상태", status_label, f"재연결 {snapshot.reconnect_count}회")
+        if snapshot.stream_status != "LIVE":
+            st.info(
+                "연결 상태가 불안정합니다. 네트워크(VPN/방화벽) 확인 후, "
+                "필요하면 우측의 '웹소켓 수동 재연결' 버튼을 눌러주세요."
+            )
 
         render_chart(candles)
         st.caption(
