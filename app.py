@@ -544,6 +544,7 @@ def render_chart(
     pattern_overlays: list[PatternSignal] | None = None,
     overlay_limit: int = 1,
     initial_window: int = 120,
+    show_projected_candles: bool = False,
 ) -> None:
     chart_df = df.copy()
     if chart_df.empty:
@@ -627,6 +628,64 @@ def render_chart(
                 bordercolor="#2b3139",
                 borderwidth=1,
             )
+    if show_projected_candles:
+        projection_steps = 12
+        last_close = float(chart_df["close"].iloc[-1])
+        if len(chart_df) >= 2:
+            recent_move = float(chart_df["close"].iloc[-1] - chart_df["close"].iloc[-2])
+        else:
+            recent_move = 0.0
+        expected_bias = pattern_overlays[0].bias if pattern_overlays else BIAS_NO_TRADE
+        atr_proxy = float((chart_df["high"] - chart_df["low"]).tail(14).mean())
+        atr_proxy = max(atr_proxy, max(last_close * 0.0008, 1e-6))
+        projection_times = [
+            chart_df["open_time"].iloc[-1] + (candle_step * (step + 1))
+            for step in range(projection_steps)
+        ]
+        projected_values: list[float] = []
+        value = last_close
+        for step in range(projection_steps):
+            drift = 0.0
+            if expected_bias == BIAS_LONG:
+                drift = atr_proxy * 0.08
+            elif expected_bias == BIAS_SHORT:
+                drift = -atr_proxy * 0.08
+            slope_decay = max(0.25, 1 - (step * 0.05))
+            value = value + (recent_move * 0.35 * slope_decay) + drift
+            projected_values.append(value)
+
+        projection_color = (
+            "#0ecb81"
+            if expected_bias == BIAS_LONG
+            else "#f6465d"
+            if expected_bias == BIAS_SHORT
+            else "#f0b90b"
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=projection_times,
+                y=projected_values,
+                mode="lines+markers",
+                line=dict(color=projection_color, width=2, dash="dash"),
+                marker=dict(size=4, color=projection_color),
+                name="예상 캔들 경로",
+                showlegend=True,
+            )
+        )
+        if projected_values:
+            fig.add_annotation(
+                x=projection_times[-1],
+                y=projected_values[-1],
+                text=f"예상({projection_steps}봉)",
+                showarrow=False,
+                xanchor="left",
+                yanchor="middle",
+                font=dict(color=projection_color, size=10),
+                bgcolor="rgba(30,35,41,0.85)",
+                bordercolor="#2b3139",
+                borderwidth=1,
+            )
+
     fig.update_layout(
         margin=dict(l=10, r=10, t=10, b=10),
         height=520,
@@ -784,6 +843,48 @@ def render_pattern_matrix(
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+def build_forecast_candles(
+    df: pd.DataFrame,
+    pattern: PatternSignal | None,
+    steps: int = 8,
+) -> pd.DataFrame:
+    if pattern is None or df.empty or steps < 2:
+        return pd.DataFrame(columns=["open_time", "open", "high", "low", "close"])
+
+    base = df.tail(2).copy()
+    if len(base) < 2:
+        return pd.DataFrame(columns=["open_time", "open", "high", "low", "close"])
+
+    last_time = base["open_time"].iloc[-1]
+    last_close = float(base["close"].iloc[-1])
+    candle_step = base["open_time"].iloc[-1] - base["open_time"].iloc[-2]
+    if candle_step <= pd.Timedelta(0):
+        candle_step = pd.Timedelta(minutes=1)
+
+    end_target = float(pattern.target)
+    projected_closes = np.linspace(last_close, end_target, steps + 1)[1:]
+    rows: list[dict[str, float | pd.Timestamp]] = []
+    prev_close = last_close
+    body_buffer = max(abs(end_target - pattern.entry) * 0.03, abs(pattern.entry - pattern.stop) * 0.02, 1e-6)
+
+    for idx, close_val in enumerate(projected_closes, start=1):
+        open_val = prev_close
+        high_val = max(open_val, close_val) + body_buffer
+        low_val = min(open_val, close_val) - body_buffer
+        rows.append(
+            {
+                "open_time": last_time + (candle_step * idx),
+                "open": float(open_val),
+                "high": float(high_val),
+                "low": float(low_val),
+                "close": float(close_val),
+            }
+        )
+        prev_close = float(close_val)
+
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     st.set_page_config(page_title="바이낸스 선물 실시간 방향성", layout="wide")
     st_autorefresh(interval=1000, key="ui_autorefresh")
@@ -809,6 +910,7 @@ def main() -> None:
                 if default_interval in ["1m", "3m", "5m", "15m", "30m", "1h", "4h"]
                 else 3,
             )
+            show_forecast = st.toggle("예상 캔들 표시", value=False)
             st.caption("화면은 1초마다 갱신되고, 뉴스는 10초마다 자동 갱신됩니다.")
             manual_reconnect_requested = st.button("웹소켓 수동 재연결", use_container_width=True)
 
@@ -964,11 +1066,28 @@ def main() -> None:
                 "필요하면 우측의 '웹소켓 수동 재연결' 버튼을 눌러주세요."
             )
 
-        render_chart(candles, chart_patterns)
+        primary_pattern = chart_patterns[0] if chart_patterns else None
+        if show_forecast:
+            forecast_df = build_forecast_candles(candles, primary_pattern, steps=8)
+            chart_source = (
+                pd.concat([candles, forecast_df], ignore_index=True)
+                if not forecast_df.empty
+                else candles
+            )
+        else:
+            forecast_df = pd.DataFrame()
+            chart_source = candles
+
+        render_chart(chart_source, chart_patterns)
         st.caption(
             "최종 방향성은 동일 신호 3회 연속일 때만 갱신됩니다. "
             "화면 갱신(1초)보다 신호 변환을 의도적으로 느리게 적용합니다."
         )
+        if show_forecast and not forecast_df.empty and primary_pattern is not None:
+            st.caption(
+                "예상 캔들 ON: 현재 패턴 목표가까지 선형 경로를 가정한 "
+                f"{len(forecast_df)}개 시뮬레이션 캔들이 포함됩니다."
+            )
         if chart_patterns:
             st.caption("오버레이에는 품질 상위 3개 패턴의 진입/손절/목표선이 표시됩니다.")
         else:

@@ -404,6 +404,217 @@ def _detect_triangles(recent: pd.DataFrame, atr: float) -> list[PatternSignal]:
     return signals
 
 
+def _detect_triple_patterns(recent: pd.DataFrame, atr: float) -> list[PatternSignal]:
+    signals: list[PatternSignal] = []
+    highs = _pivot_points(recent["high"], kind="high", wing=2)
+    lows = _pivot_points(recent["low"], kind="low", wing=2)
+    close_last = float(recent["close"].iloc[-1])
+
+    if len(highs) >= 3:
+        top_set = highs[-3:]
+        top_values = [value for _, value in top_set]
+        top_mean = float(np.mean(top_values))
+        tolerance = max(atr * 1.6, top_mean * 0.012)
+        if max(abs(value - top_mean) for value in top_values) <= tolerance:
+            left_idx = top_set[0][0]
+            right_idx = top_set[-1][0]
+            neckline = float(recent["low"].iloc[left_idx : right_idx + 1].min())
+            if close_last < neckline - (atr * 0.08):
+                entry = neckline
+                stop = max(top_values) + (atr * 0.35)
+                target = neckline - (max(top_values) - neckline)
+                symmetry = 1 - (
+                    max(abs(value - top_mean) for value in top_values) / max(1e-6, tolerance)
+                )
+                break_strength = min(1.0, (neckline - close_last) / max(1e-6, atr * 2))
+                rr_score = min(1.0, _risk_reward(entry, stop, target, BIAS_SHORT) / 2)
+                quality = _clamp(
+                    (symmetry * 0.4) + (break_strength * 0.35) + (rr_score * 0.25),
+                    0.0,
+                    1.0,
+                )
+                signals.append(
+                    PatternSignal(
+                        name="트리플탑",
+                        bias=BIAS_SHORT,
+                        entry=entry,
+                        stop=stop,
+                        target=target,
+                        quality=quality,
+                        reason=f"3중 고점 형성 후 넥라인 {neckline:.2f} 하향 이탈",
+                    )
+                )
+
+    if len(lows) >= 3:
+        bottom_set = lows[-3:]
+        bottom_values = [value for _, value in bottom_set]
+        bottom_mean = float(np.mean(bottom_values))
+        tolerance = max(atr * 1.6, bottom_mean * 0.012)
+        if max(abs(value - bottom_mean) for value in bottom_values) <= tolerance:
+            left_idx = bottom_set[0][0]
+            right_idx = bottom_set[-1][0]
+            neckline = float(recent["high"].iloc[left_idx : right_idx + 1].max())
+            if close_last > neckline + (atr * 0.08):
+                entry = neckline
+                stop = min(bottom_values) - (atr * 0.35)
+                target = neckline + (neckline - min(bottom_values))
+                symmetry = 1 - (
+                    max(abs(value - bottom_mean) for value in bottom_values) / max(1e-6, tolerance)
+                )
+                break_strength = min(1.0, (close_last - neckline) / max(1e-6, atr * 2))
+                rr_score = min(1.0, _risk_reward(entry, stop, target, BIAS_LONG) / 2)
+                quality = _clamp(
+                    (symmetry * 0.4) + (break_strength * 0.35) + (rr_score * 0.25),
+                    0.0,
+                    1.0,
+                )
+                signals.append(
+                    PatternSignal(
+                        name="트리플바텀",
+                        bias=BIAS_LONG,
+                        entry=entry,
+                        stop=stop,
+                        target=target,
+                        quality=quality,
+                        reason=f"3중 저점 형성 후 넥라인 {neckline:.2f} 상향 돌파",
+                    )
+                )
+    return signals
+
+
+def _detect_rectangles(recent: pd.DataFrame, atr: float) -> list[PatternSignal]:
+    signals: list[PatternSignal] = []
+    window = recent.tail(40).reset_index(drop=True)
+    if len(window) < 25:
+        return signals
+
+    highs = window["high"].to_numpy(dtype=float)
+    lows = window["low"].to_numpy(dtype=float)
+    close_last = float(window["close"].iloc[-1])
+    top_band = float(np.mean(np.sort(highs)[-6:]))
+    bottom_band = float(np.mean(np.sort(lows)[:6]))
+    height = top_band - bottom_band
+    if height <= max(atr * 1.2, close_last * 0.003):
+        return signals
+
+    flat_top = np.std(np.sort(highs)[-6:]) <= max(atr * 0.9, top_band * 0.004)
+    flat_bottom = np.std(np.sort(lows)[:6]) <= max(atr * 0.9, bottom_band * 0.004)
+    if not (flat_top and flat_bottom):
+        return signals
+
+    if close_last > top_band + (atr * 0.08):
+        entry = top_band
+        stop = bottom_band - (atr * 0.25)
+        target = entry + height
+        break_strength = min(1.0, (close_last - top_band) / max(1e-6, atr * 2))
+        rr_score = min(1.0, _risk_reward(entry, stop, target, BIAS_LONG) / 2)
+        quality = _clamp(0.4 + (break_strength * 0.3) + (rr_score * 0.3), 0.0, 1.0)
+        signals.append(
+            PatternSignal(
+                name="상승 렉탱글",
+                bias=BIAS_LONG,
+                entry=entry,
+                stop=stop,
+                target=target,
+                quality=quality,
+                reason=f"박스 상단 {top_band:.2f} 돌파",
+            )
+        )
+    elif close_last < bottom_band - (atr * 0.08):
+        entry = bottom_band
+        stop = top_band + (atr * 0.25)
+        target = entry - height
+        break_strength = min(1.0, (bottom_band - close_last) / max(1e-6, atr * 2))
+        rr_score = min(1.0, _risk_reward(entry, stop, target, BIAS_SHORT) / 2)
+        quality = _clamp(0.4 + (break_strength * 0.3) + (rr_score * 0.3), 0.0, 1.0)
+        signals.append(
+            PatternSignal(
+                name="하락 렉탱글",
+                bias=BIAS_SHORT,
+                entry=entry,
+                stop=stop,
+                target=target,
+                quality=quality,
+                reason=f"박스 하단 {bottom_band:.2f} 이탈",
+            )
+        )
+    return signals
+
+
+def _detect_flags_pennants(recent: pd.DataFrame, atr: float) -> list[PatternSignal]:
+    signals: list[PatternSignal] = []
+    window = recent.tail(60).reset_index(drop=True)
+    if len(window) < 45:
+        return signals
+
+    pole = window.iloc[:24]
+    cons = window.iloc[24:]
+    pole_move = float(pole["close"].iloc[-1] - pole["close"].iloc[0])
+    pole_move_abs = abs(pole_move)
+    pole_strength = pole_move_abs / max(1e-6, float(pole["close"].iloc[0]))
+    if pole_strength < 0.02:
+        return signals
+
+    x = np.arange(len(cons), dtype=float)
+    high_arr = cons["high"].to_numpy(dtype=float)
+    low_arr = cons["low"].to_numpy(dtype=float)
+    high_slope, high_intercept = np.polyfit(x, high_arr, 1)
+    low_slope, low_intercept = np.polyfit(x, low_arr, 1)
+    upper_end = (high_slope * x[-1]) + high_intercept
+    lower_end = (low_slope * x[-1]) + low_intercept
+    close_last = float(window["close"].iloc[-1])
+    converging = (upper_end - lower_end) < ((high_arr[0] - low_arr[0]) * 0.8)
+
+    # Bullish continuation set (flag / pennant)
+    if pole_move > 0:
+        bull_flag = high_slope < 0 and low_slope < 0
+        bull_pennant = high_slope < 0 and low_slope > 0 and converging
+        if (bull_flag or bull_pennant) and close_last > upper_end + (atr * 0.05):
+            entry = upper_end
+            stop = float(cons["low"].min()) - (atr * 0.2)
+            target = entry + (pole_move_abs * 0.8)
+            break_strength = min(1.0, (close_last - upper_end) / max(1e-6, atr * 2))
+            rr_score = min(1.0, _risk_reward(entry, stop, target, BIAS_LONG) / 2)
+            shape_score = 0.62 if bull_pennant else 0.55
+            quality = _clamp(shape_score + (break_strength * 0.2) + (rr_score * 0.25), 0.0, 1.0)
+            signals.append(
+                PatternSignal(
+                    name="상승 페넌트" if bull_pennant else "상승 플래그",
+                    bias=BIAS_LONG,
+                    entry=entry,
+                    stop=stop,
+                    target=target,
+                    quality=quality,
+                    reason="상승 폴 이후 조정/수렴 구간 상단 돌파",
+                )
+            )
+
+    # Bearish continuation set (flag / pennant)
+    if pole_move < 0:
+        bear_flag = high_slope > 0 and low_slope > 0
+        bear_pennant = high_slope < 0 and low_slope > 0 and converging
+        if (bear_flag or bear_pennant) and close_last < lower_end - (atr * 0.05):
+            entry = lower_end
+            stop = float(cons["high"].max()) + (atr * 0.2)
+            target = entry - (pole_move_abs * 0.8)
+            break_strength = min(1.0, (lower_end - close_last) / max(1e-6, atr * 2))
+            rr_score = min(1.0, _risk_reward(entry, stop, target, BIAS_SHORT) / 2)
+            shape_score = 0.62 if bear_pennant else 0.55
+            quality = _clamp(shape_score + (break_strength * 0.2) + (rr_score * 0.25), 0.0, 1.0)
+            signals.append(
+                PatternSignal(
+                    name="하락 페넌트" if bear_pennant else "하락 플래그",
+                    bias=BIAS_SHORT,
+                    entry=entry,
+                    stop=stop,
+                    target=target,
+                    quality=quality,
+                    reason="하락 폴 이후 되돌림/수렴 구간 하단 이탈",
+                )
+            )
+    return signals
+
+
 def detect_chart_patterns(df: pd.DataFrame) -> list[PatternSignal]:
     if len(df) < 70:
         return []
@@ -416,9 +627,12 @@ def detect_chart_patterns(df: pd.DataFrame) -> list[PatternSignal]:
 
     detected = []
     detected.extend(_detect_double_patterns(recent, atr))
+    detected.extend(_detect_triple_patterns(recent, atr))
     detected.extend(_detect_head_shoulders(recent, atr))
     detected.extend(_detect_wedges(recent, atr))
     detected.extend(_detect_triangles(recent, atr))
+    detected.extend(_detect_rectangles(recent, atr))
+    detected.extend(_detect_flags_pennants(recent, atr))
 
     # 같은 이름 패턴은 가장 최근/품질 높은 하나만 유지
     best_by_name: dict[str, PatternSignal] = {}
