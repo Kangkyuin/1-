@@ -682,7 +682,12 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         close=working["close"],
         window=14,
     )
+    bb = ta.volatility.BollingerBands(close=working["close"], window=20, window_dev=2)
+    working["bb_upper"] = bb.bollinger_hband()
+    working["bb_lower"] = bb.bollinger_lband()
+    working["bb_mid"] = bb.bollinger_mavg()
     working["atr_pct"] = (working["atr14"] / working["close"]) * 100
+    working["dist_ema20_atr"] = (working["close"] - working["ema20"]) / working["atr14"].replace(0, np.nan)
     working["donchian_high_20"] = working["high"].rolling(window=20).max().shift(1)
     working["donchian_low_20"] = working["low"].rolling(window=20).min().shift(1)
     working["vol_ma20"] = working["volume"].rolling(window=20).mean()
@@ -699,6 +704,9 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         "donchian_low_20",
         "vol_ma20",
         "atr14",
+        "bb_upper",
+        "bb_lower",
+        "dist_ema20_atr",
     ]
     if last[indicator_cols].isna().any():
         return TimeframeSignal(
@@ -735,6 +743,18 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
     short_breakout = bool(last["close"] <= last["donchian_low_20"])
     long_momentum = bool(last["rsi14"] >= 55)
     short_momentum = bool(last["rsi14"] <= 45)
+    long_reversal_ready = bool(last["rsi14"] <= 34 and last["close"] <= last["bb_lower"])
+    short_reversal_ready = bool(last["rsi14"] >= 66 and last["close"] >= last["bb_upper"])
+    long_exhausted = bool(
+        last["rsi14"] >= 72
+        and last["close"] >= last["bb_upper"]
+        and last["dist_ema20_atr"] >= 1.35
+    )
+    short_exhausted = bool(
+        last["rsi14"] <= 28
+        and last["close"] <= last["bb_lower"]
+        and last["dist_ema20_atr"] <= -1.35
+    )
 
     long_checks = [
         trend_long,
@@ -758,8 +778,16 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
     base_short_score = sum(1 for condition in short_checks if condition)
     pattern_long_bonus = min(2, int(round(pattern_long_strength * 1.5)))
     pattern_short_bonus = min(2, int(round(pattern_short_strength * 1.5)))
+    if not adx_ok:
+        # 횡보장에서 패턴 보너스 과적용 방지
+        pattern_long_bonus = min(pattern_long_bonus, 1)
+        pattern_short_bonus = min(pattern_short_bonus, 1)
     long_score = base_long_score + pattern_long_bonus
     short_score = base_short_score + pattern_short_bonus
+    if long_reversal_ready and not trend_short:
+        long_score += 1
+    if short_reversal_ready and not trend_long:
+        short_score += 1
 
     reasons: list[str] = [
         _check_label(
@@ -784,16 +812,25 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
             f"상단={last['donchian_high_20']:.2f}, 하단={last['donchian_low_20']:.2f}",
         ),
         _check_label("모멘텀(RSI)", long_momentum or short_momentum, f"RSI14={last['rsi14']:.2f}"),
+        _check_label(
+            "과열 추격 방지",
+            not (long_exhausted or short_exhausted),
+            f"EMA20대비 이격(ATR)={last['dist_ema20_atr']:.2f}",
+        ),
     ]
     if pattern_summaries:
         reasons.append(f"패턴 감지: {pattern_summaries[0]}")
     else:
         reasons.append("패턴 감지: 유효 패턴 없음")
 
+    long_hard_gate = adx_ok and vol_ok and not long_exhausted
+    short_hard_gate = adx_ok and vol_ok and not short_exhausted
+
     if (
         long_score >= 6
         and short_score <= 4
         and trend_long
+        and long_hard_gate
         and (long_breakout or pattern_long_strength >= 0.55)
     ):
         bias = BIAS_LONG
@@ -801,6 +838,7 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         short_score >= 6
         and long_score <= 4
         and trend_short
+        and short_hard_gate
         and (short_breakout or pattern_short_strength >= 0.55)
     ):
         bias = BIAS_SHORT
@@ -811,7 +849,7 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         trend_conflict = not trend_long and not trend_short
         breakout_missing = not long_breakout and not short_breakout
         momentum_neutral = not long_momentum and not short_momentum
-        directional_strength = max(long_score, short_score) / 9
+        directional_strength = max(long_score, short_score) / 10
 
         no_trade_strength = 0.0
         no_trade_strength += 0.28 if trend_conflict else 0.0
@@ -820,6 +858,7 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         no_trade_strength += 0.12 if momentum_neutral else 0.0
         no_trade_strength += 0.08 if not volume_ok else 0.0
         no_trade_strength += 0.12 if max(pattern_long_strength, pattern_short_strength) < 0.6 else 0.0
+        no_trade_strength += 0.12 if (long_exhausted or short_exhausted) else 0.0
 
         confidence = int(
             max(
@@ -836,10 +875,10 @@ def compute_timeframe_signal(df: pd.DataFrame, timeframe: str) -> TimeframeSigna
         confidence = int(
             min(
                 100,
-                round((directional_score / 9) * 75 + max(0, min(20, (last["adx14"] - 20) * 2))),
+                round((directional_score / 10) * 75 + max(0, min(20, (last["adx14"] - 20) * 2))),
             )
         )
-        reasons.append(f"엄격 진입 조건 충족 -> {bias_to_korean(bias)} (점수 {directional_score}/9)")
+        reasons.append(f"엄격 진입 조건 충족 -> {bias_to_korean(bias)} (점수 {directional_score}/10)")
 
     return TimeframeSignal(
         timeframe=timeframe,
