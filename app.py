@@ -543,8 +543,9 @@ def render_chart(
     df: pd.DataFrame,
     pattern_overlays: list[PatternSignal] | None = None,
     overlay_limit: int = 1,
+    initial_window: int = 120,
 ) -> None:
-    chart_df = df.tail(120)
+    chart_df = df.copy()
     if chart_df.empty:
         st.info("표시할 캔들 데이터가 없습니다.")
         return
@@ -553,8 +554,11 @@ def render_chart(
         candle_step = chart_df["open_time"].iloc[-1] - chart_df["open_time"].iloc[-2]
     else:
         candle_step = pd.Timedelta(minutes=1)
-    x_start = chart_df["open_time"].iloc[0]
-    x_end = chart_df["open_time"].iloc[-1] + (candle_step * 2)
+    x_full_start = chart_df["open_time"].iloc[0]
+    x_full_end = chart_df["open_time"].iloc[-1] + (candle_step * 2)
+    start_index = max(0, len(chart_df) - max(initial_window, 30))
+    x_view_start = chart_df["open_time"].iloc[start_index]
+    x_view_end = x_full_end
 
     fig = go.Figure()
     fig.add_trace(
@@ -580,7 +584,7 @@ def render_chart(
             tag = f"{idx + 1}:{pattern.name} {bias_to_korean(pattern.bias)}"
             fig.add_trace(
                 go.Scatter(
-                    x=[x_start, x_end],
+                    x=[x_full_start, x_full_end],
                     y=[pattern.entry, pattern.entry],
                     mode="lines",
                     line=dict(color="#f0b90b", dash="dash", width=1.8),
@@ -590,7 +594,7 @@ def render_chart(
             )
             fig.add_trace(
                 go.Scatter(
-                    x=[x_start, x_end],
+                    x=[x_full_start, x_full_end],
                     y=[pattern.stop, pattern.stop],
                     mode="lines",
                     line=dict(color="#f6465d", dash="dot", width=1.3),
@@ -600,7 +604,7 @@ def render_chart(
             )
             fig.add_trace(
                 go.Scatter(
-                    x=[x_start, x_end],
+                    x=[x_full_start, x_full_end],
                     y=[pattern.target, pattern.target],
                     mode="lines",
                     line=dict(color="#0ecb81", dash="dot", width=1.3),
@@ -609,7 +613,7 @@ def render_chart(
                 )
             )
             fig.add_annotation(
-                x=x_end,
+                x=x_full_end,
                 y=pattern.entry + (label_step * idx),
                 text=(
                     f"{idx + 1}) {pattern.name} {bias_to_korean(pattern.bias)} "
@@ -633,7 +637,7 @@ def render_chart(
         dragmode="pan",
     )
     fig.update_xaxes(
-        range=[x_start, x_end],
+        range=[x_view_start, x_view_end],
         fixedrange=False,
         showgrid=True,
         gridcolor="#1f2733",
