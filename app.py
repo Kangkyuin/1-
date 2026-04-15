@@ -247,7 +247,7 @@ def format_pubdate_kst(pub_date: str) -> str:
         return pub_date
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def fetch_live_news(symbol: str, limit: int = 8) -> tuple[list[dict[str, str]], str | None]:
     query = build_news_query(symbol)
     url = (
@@ -378,22 +378,32 @@ def main() -> None:
             if default_interval in ["1m", "3m", "5m", "15m", "30m", "1h", "4h"]
             else 3,
         )
-        st.markdown("#### 뉴스/칼럼 참고 (선택)")
+        news_items, news_error = fetch_live_news(symbol=symbol, limit=7)
+        auto_news_text = " ".join(article["title"] for article in news_items)
+        auto_news_score, auto_news_reason = infer_news_sentiment_from_text(auto_news_text)
+
+        st.markdown("#### 뉴스 감성 반영")
         news_input = st.text_area(
-            "관련 뉴스 헤드라인 또는 칼럼 핵심 문장",
-            placeholder="예: BTC ETF 추가 승인 기대감으로 기관 자금 유입 확대...",
+            "수동 뉴스/칼럼 입력 (선택)",
+            placeholder="비워두면 아래 실시간 뉴스 제목으로 자동 감성 점수를 계산합니다.",
             height=90,
         )
-        news_score, news_reason = infer_news_sentiment_from_text(news_input)
-        if news_score is not None:
-            st.caption(f"{news_reason} / 점수 {news_score:+.2f}")
+        if news_input.strip():
+            news_score, news_reason = infer_news_sentiment_from_text(news_input)
+            st.caption(f"수동 입력 반영: {news_reason} / 점수 {news_score:+.2f}")
         else:
-            st.caption(news_reason)
-        st.caption("화면은 1초마다 갱신되고, 체결 스트림은 WebSocket으로 수신합니다.")
+            news_score = auto_news_score
+            if news_error:
+                st.caption("자동 뉴스 점수 계산 실패: 뉴스 수집 오류")
+            elif news_score is None:
+                st.caption("자동 뉴스 점수 계산 대기 중")
+            else:
+                st.caption(f"자동 뉴스 반영: {auto_news_reason} / 점수 {news_score:+.2f}")
+
+        st.caption("화면은 1초마다 갱신되고, 뉴스는 10초마다 자동 갱신됩니다.")
 
         st.markdown("---")
         st.markdown("#### 실시간 코인 뉴스")
-        news_items, news_error = fetch_live_news(symbol=symbol, limit=7)
         if news_error:
             st.info(news_error)
         elif not news_items:
